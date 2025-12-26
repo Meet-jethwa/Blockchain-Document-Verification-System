@@ -17,6 +17,12 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
     wallet,
     contract,
     async registerDocumentHash(hash) {
+      // Pre-check to avoid a revert (which can surface as "missing revert data" during estimateGas)
+      // and to return a deterministic error message for duplicates.
+      const exists = await contract.verifyDocument(hash);
+      if (exists) {
+        throw new Error("Document already exists");
+      }
       const tx = await contract.registerDocument(hash);
       const receipt = await tx.wait();
       return { txHash: tx.hash, receipt };

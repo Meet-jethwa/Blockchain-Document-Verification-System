@@ -34,6 +34,23 @@ const ipfs = pickIpfsUploader({
   ipfsDisabled: config.ipfsDisabled,
 });
 
+// Convenience route so opening http://localhost:8080/ in a browser doesn't show "Cannot GET /"
+app.get("/", (_req, res) => {
+  res.type("text/plain").send(
+    [
+      "Blockchain Document Verification Backend",
+      "",
+      "Available endpoints:",
+      "  GET  /api/health",
+      "  POST /api/register      (multipart form-data field: file)",
+      "  POST /api/verify        (multipart form-data field: file)",
+      "  POST /api/verify-hash   (json: { \"hash\": \"0x...\" })",
+      "",
+      "Tip: open /api/health to confirm connectivity.",
+    ].join("\n")
+  );
+});
+
 app.get("/api/health", async (_req, res) => {
   const blockNumber = await chain.provider.getBlockNumber();
   res.json({
