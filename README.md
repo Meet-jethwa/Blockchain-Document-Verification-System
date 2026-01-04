@@ -113,7 +113,7 @@ Health check:
 In Terminal 4:
 
 ```powershell
-cd "C:\Users\meetj\OneDrive\Desktop\1\Blockchain-Document-Verification-System\blockchain-doc-verification\frontend"
+cd "blockchain-doc-verification\frontend"
 npm install
 npm run dev
 ```
@@ -212,4 +212,5 @@ When you deploy publicly, you cannot use `RPC_URL=http://127.0.0.1:8545` (that o
 - Use a real RPC provider URL (Infura/Alchemy/QuickNode) as `RPC_URL`.
 - Set `CONTRACT_ADDRESS` to your deployed contract address on that network.
 - Host backend + frontend and configure environment variables via your hosting provider.
+
 
