@@ -1,125 +1,75 @@
-# What’s implemented (detailed)
+# Hardhat + Smart Contract
 
-This project already has a working Hardhat + Solidity setup, a `DocumentRegistry` smart contract, and scripts to compile, deploy, and do a quick end‑to‑end demo.
+This folder contains the Solidity contract and Hardhat scripts used by the backend.
 
-## 1) Smart contract
+## Smart contract
 
-Contract file: [contracts/DocumentRegistry.sol](contracts/DocumentRegistry.sol)
+- Contract: [contracts/DocumentRegistry.sol](contracts/DocumentRegistry.sol)
+- Stores a document hash (bytes32) on-chain.
+- Prevents duplicates (same hash can’t be registered twice).
 
-### Storage
-
-- Uses `mapping(bytes32 => bool) private documents;`
-- Each document is represented by a `bytes32` hash (usually a Keccak‑256 hash).
-
-### Functions
+Key functions:
 
 - `registerDocument(bytes32 hash)`
-  - Rejects duplicates (`require(!documents[hash], "Document already exists")`)
-  - Stores the hash on-chain (`documents[hash] = true`)
-  - Emits `DocumentRegistered(hash, msg.sender)`
+- `verifyDocument(bytes32 hash) → bool`
 
-- `verifyDocument(bytes32 hash) view returns (bool)`
-  - Returns `true` if the hash was registered, otherwise `false`
+## Local development (Hardhat)
 
-## 2) Hardhat configuration
-
-Config file: [hardhat.config.js](hardhat.config.js)
-
-- Solidity compiler version is set to `0.8.20`.
-- Uses `@nomicfoundation/hardhat-ethers` (ethers v6 integration).
-- Loads environment variables from `.env` using `dotenv/config`.
-
-### Optional public networks (enabled via `.env`)
-
-If you provide RPC URLs in your `.env`, the config enables:
-- `sepolia` (Ethereum testnet)
-- `amoy` (Polygon testnet)
-
-The deployer account is taken from `DEPLOYER_PRIVATE_KEY`.
-
-## 3) Scripts you can run
-
-All commands run from the project root.
-
-### Environment check
+From this folder:
 
 ```bash
-node -v
-npm -v
+npm install
 ```
 
-### Compile
+Terminal A (keep running):
 
 ```bash
-npm run compile
+npm run node
 ```
 
-Expected: compilation succeeds with Solidity `0.8.20`.
+This starts a local RPC at `http://127.0.0.1:8545`.
 
-### Quick demo (deploy + register + verify)
+Terminal B (deploy):
+
+```bash
+npm run deploy:localhost
+```
+
+Copy the address printed as:
+
+```text
+DocumentRegistry deployed to: 0x...
+```
+
+That value is your backend `CONTRACT_ADDRESS`.
+
+## Quick demo
+
+Runs deploy + register + verify in one go:
 
 ```bash
 npm run demo
 ```
 
-What it does (in one run):
-- Deploys `DocumentRegistry`
-- Creates a sample hash (Keccak‑256)
-- Calls `registerDocument(hash)`
-- Calls `verifyDocument(hash)`
+## Public network (Sepolia / Amoy)
 
-Expected output includes:
-- `DocumentRegistry deployed to: 0x...`
-- `verifyDocument(hash): true`
+Hardhat reads network settings from `.env`.
 
-Demo script: [scripts/demo.js](scripts/demo.js)
+1) Create a local env file:
 
-### Local blockchain server + deploy to localhost
-
-Terminal A (keep running):
-```bash
-npm run node
+```powershell
+Copy-Item .env.example .env
 ```
 
-Terminal B:
-```bash
-npm run deploy:localhost
-```
+2) Set values in `.env`:
 
-Expected: prints the deployed contract address (and the deployment tx hash).
+- `DEPLOYER_PRIVATE_KEY=0x...` (funded wallet for that network)
+- `SEPOLIA_RPC_URL=https://...` (Infura/Alchemy/etc.)
+- `AMOY_RPC_URL=https://...` (Infura/Alchemy/etc.)
 
-Deploy script: [scripts/deploy.js](scripts/deploy.js)
+Deploy:
 
-## 4) Public testnet deploy (Sepolia / Amoy)
+- `npm run deploy:sepolia`
+- `npm run deploy:amoy`
 
-### Set up `.env`
-
-1) Create your local env file:
-```bash
-copy .env.example .env
-```
-
-2) Fill in `.env`:
-- `DEPLOYER_PRIVATE_KEY` (test wallet private key)
-- `SEPOLIA_RPC_URL` and/or `AMOY_RPC_URL`
-
-### Deploy
-
-- Sepolia:
-```bash
-npm run deploy:sepolia
-```
-
-- Amoy:
-```bash
-npm run deploy:amoy
-```
-
-Expected: prints `DocumentRegistry deployed to: 0x...` and `Deployment tx: 0x...`.
-
-## 5) What counts as “done” (proof)
-
-You can treat the work as complete if:
-- `npm run compile` completes without errors
-- `npm run demo` prints `verifyDocument(hash): true`
-- A deploy command prints a contract address (`deploy:localhost` or a public testnet deploy)
+Tip: for public deployment, you’ll use the deployed contract address as `CONTRACT_ADDRESS` in the backend, and a public `RPC_URL` (not `127.0.0.1`).

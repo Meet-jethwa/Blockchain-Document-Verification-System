@@ -13,7 +13,19 @@ function normalizePrivateKey(value) {
 const deployerKey = normalizePrivateKey(process.env.DEPLOYER_PRIVATE_KEY);
 const accounts = deployerKey ? [deployerKey] : [];
 
+// Default key provided by `hardhat node` (local development only).
+const HARDHAT_LOCAL_DEFAULT_KEY =
+  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const localhostAccounts = deployerKey ? [deployerKey] : [HARDHAT_LOCAL_DEFAULT_KEY];
+
 const networks = {};
+
+// Local hardhat node (http://127.0.0.1:8545)
+networks.localhost = {
+  type: "http",
+  url: "http://127.0.0.1:8545",
+  accounts: localhostAccounts,
+};
 
 if (process.env.SEPOLIA_RPC_URL) {
   networks.sepolia = {

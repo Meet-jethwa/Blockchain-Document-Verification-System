@@ -1,10 +1,13 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { config } from "./config.js";
 import { makeChainClient, hashFileKeccak256 } from "./chain.js";
 import { pickIpfsUploader } from "./ipfs.js";
+import { RegistryStore } from "./registryStore.js";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -34,42 +37,71 @@ const ipfs = pickIpfsUploader({
   ipfsDisabled: config.ipfsDisabled,
 });
 
-// Convenience route so opening http://localhost:8080/ in a browser doesn't show "Cannot GET /"
+const registryStore = new RegistryStore();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, "public");
+
+// Serve the simple frontend UI
+app.use(express.static(publicDir));
+
 app.get("/", (_req, res) => {
-  res.type("text/plain").send(
-    [
-      "Blockchain Document Verification Backend",
-      "",
-      "Available endpoints:",
-      "  GET  /api/health",
-      "  POST /api/register      (multipart form-data field: file)",
-      "  POST /api/verify        (multipart form-data field: file)",
-      "  POST /api/verify-hash   (json: { \"hash\": \"0x...\" })",
-      "",
-      "Tip: open /api/health to confirm connectivity.",
-    ].join("\n")
-  );
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.get("/api/health", async (_req, res) => {
-  const blockNumber = await chain.provider.getBlockNumber();
+  const [blockNumber, network, code] = await Promise.all([
+    chain.provider.getBlockNumber(),
+    chain.provider.getNetwork(),
+    chain.provider.getCode(config.contractAddress),
+  ]);
   res.json({
     ok: true,
+    chainId: Number(network.chainId),
     blockNumber,
     contractAddress: config.contractAddress,
+    contractHasCode: !!code && code !== "0x",
     address: chain.wallet.address,
   });
 });
 
 // Register: upload -> hash -> IPFS -> chain tx
 app.post("/api/register", upload.single("file"), async (req, res) => {
+  let hash = null;
+  let fileMeta = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Missing file (field name: file)" });
     }
 
     const { originalname, buffer, mimetype, size } = req.file;
-    const hash = hashFileKeccak256(buffer);
+    fileMeta = { name: originalname, mimetype, size };
+    hash = hashFileKeccak256(buffer);
+
+    // If already registered on-chain, return the previously known IPFS link (if we have it)
+    // instead of re-uploading and failing the tx.
+    const alreadyRegistered = await chain.verifyDocumentHash(hash);
+    if (alreadyRegistered) {
+      const existing = registryStore.get(hash);
+      return res.json({
+        message: "Document is registered",
+        hash,
+        file: fileMeta,
+        ipfs: existing
+          ? {
+              cid: existing.cid ?? null,
+              url: existing.url ?? null,
+              provider: existing.provider ?? null,
+            }
+          : { cid: null, url: null, provider: null },
+        chain: {
+          contractAddress: config.contractAddress,
+          txHash: null,
+          blockNumber: null,
+        },
+      });
+    }
 
     const ipfsResult = await ipfs.uploadBuffer({
       buffer,
@@ -78,9 +110,18 @@ app.post("/api/register", upload.single("file"), async (req, res) => {
 
     const { txHash, receipt } = await chain.registerDocumentHash(hash);
 
+    await registryStore.upsert(hash, {
+      cid: ipfsResult.cid,
+      url: ipfsResult.url,
+      provider: ipfsResult.provider,
+      filename: originalname || "document",
+      createdAt: new Date().toISOString(),
+    });
+
     return res.json({
+      message: "Registered successfully",
       hash,
-      file: { name: originalname, mimetype, size },
+      file: fileMeta,
       ipfs: {
         cid: ipfsResult.cid,
         url: ipfsResult.url,
@@ -93,10 +134,34 @@ app.post("/api/register", upload.single("file"), async (req, res) => {
       },
     });
   } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/register error:", err);
+
     const message = err instanceof Error ? err.message : String(err);
-    // Common case: duplicate registration
-    const status = message.includes("Document already exists") ? 409 : 500;
-    return res.status(status).json({ error: message });
+
+    // Handle rare race: if it became registered between our check and tx
+    if (message.includes("Document already exists") && hash) {
+      const existing = registryStore.get(hash);
+      return res.json({
+        message: "Document is registered",
+        hash,
+        file: fileMeta,
+        ipfs: existing
+          ? {
+              cid: existing.cid ?? null,
+              url: existing.url ?? null,
+              provider: existing.provider ?? null,
+            }
+          : { cid: null, url: null, provider: null },
+        chain: {
+          contractAddress: config.contractAddress,
+          txHash: null,
+          blockNumber: null,
+        },
+      });
+    }
+
+    return res.status(500).json({ error: message });
   }
 });
 
@@ -110,6 +175,8 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
     const verified = await chain.verifyDocumentHash(hash);
     return res.json({ hash, verified });
   } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/verify error:", err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
@@ -125,14 +192,25 @@ app.post("/api/verify-hash", async (req, res) => {
     const verified = await chain.verifyDocumentHash(hash);
     return res.json({ hash, verified });
   } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/verify-hash error:", err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
 });
 
-app.listen(config.port, () => {
+async function main() {
+  await registryStore.init();
+  app.listen(config.port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Backend listening on http://localhost:${config.port}`);
+  });
+}
+
+main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.log(`Backend listening on http://localhost:${config.port}`);
+  console.error("Backend failed to start:", err);
+  process.exitCode = 1;
 });
 
 
