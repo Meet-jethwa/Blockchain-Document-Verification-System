@@ -1,9 +1,9 @@
-﻿# Blockchain Document Verification System
+# Blockchain Document Verification System
 
 Verify documents using a simple, tamper-evident flow:
 
-- **Register**: upload file → backend hashes it → uploads to IPFS → stores the hash on-chain
-- **Verify**: upload file → backend hashes it → checks if the hash is registered on-chain
+- **Register**: upload file → backend uploads to IPFS + returns CID + hash → your wallet stores (hash, CID) on-chain
+- **Verify**: upload file → frontend hashes it → checks on-chain that *your wallet* registered that hash (prevents relay/replay in-app)
 
 Repository layout:
 

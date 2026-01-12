@@ -4,6 +4,8 @@ export type RegisterResponse = {
   file: { name: string; mimetype: string; size: number }
   ipfs: { cid: string | null; url: string | null; provider: string | null }
   chain: { contractAddress: string; txHash: string | null; blockNumber: number | null }
+  alreadyRegistered?: boolean
+  existingOwner?: string | null
 }
 
 export type VerifyResponse = {

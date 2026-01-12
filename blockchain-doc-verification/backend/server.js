@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { makeChainClient, hashFileKeccak256 } from "./chain.js";
 import { pickIpfsUploader } from "./ipfs.js";
-import { RegistryStore } from "./registryStore.js";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -37,8 +36,6 @@ const ipfs = pickIpfsUploader({
   ipfsDisabled: config.ipfsDisabled,
 });
 
-const registryStore = new RegistryStore();
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 
@@ -62,11 +59,12 @@ app.get("/api/health", async (_req, res) => {
     contractAddress: config.contractAddress,
     contractHasCode: !!code && code !== "0x",
     address: chain.wallet.address,
+    ipfsGatewayBaseUrl: config.ipfsGatewayBaseUrl,
   });
 });
 
-// Register: upload -> hash -> IPFS -> chain tx
-app.post("/api/register", upload.single("file"), async (req, res) => {
+// Upload: upload -> hash -> IPFS (no on-chain write; client wallet should write)
+async function handleUpload(req, res) {
   let hash = null;
   let fileMeta = null;
 
@@ -79,20 +77,27 @@ app.post("/api/register", upload.single("file"), async (req, res) => {
     fileMeta = { name: originalname, mimetype, size };
     hash = hashFileKeccak256(buffer);
 
-    // If already registered on-chain, return the previously known IPFS link (if we have it)
-    // instead of re-uploading and failing the tx.
+    // If already registered on-chain, do NOT re-upload or attempt to "re-register".
+    // (Prevents misleading UX and supports ownership-bound verification.)
     const alreadyRegistered = await chain.verifyDocumentHash(hash);
     if (alreadyRegistered) {
-      const existing = registryStore.get(hash);
+      let existing = null;
+      try {
+        existing = await chain.getDocument(hash);
+      } catch {
+        // If contract doesn't have CID for older entries or call fails, just omit.
+      }
       return res.json({
-        message: "Document is registered",
+        message: "Document is already registered on-chain",
         hash,
         file: fileMeta,
-        ipfs: existing
+        alreadyRegistered: true,
+        existingOwner: existing?.owner ?? null,
+        ipfs: existing?.cid
           ? {
-              cid: existing.cid ?? null,
-              url: existing.url ?? null,
-              provider: existing.provider ?? null,
+              cid: existing.cid,
+              url: `${config.ipfsGatewayBaseUrl}${existing.cid}`,
+              provider: null,
             }
           : { cid: null, url: null, provider: null },
         chain: {
@@ -108,18 +113,8 @@ app.post("/api/register", upload.single("file"), async (req, res) => {
       filename: originalname || "document",
     });
 
-    const { txHash, receipt } = await chain.registerDocumentHash(hash);
-
-    await registryStore.upsert(hash, {
-      cid: ipfsResult.cid,
-      url: ipfsResult.url,
-      provider: ipfsResult.provider,
-      filename: originalname || "document",
-      createdAt: new Date().toISOString(),
-    });
-
     return res.json({
-      message: "Registered successfully",
+      message: "Uploaded to IPFS. Now register on-chain using your wallet.",
       hash,
       file: fileMeta,
       ipfs: {
@@ -129,41 +124,23 @@ app.post("/api/register", upload.single("file"), async (req, res) => {
       },
       chain: {
         contractAddress: config.contractAddress,
-        txHash,
-        blockNumber: receipt?.blockNumber ?? null,
+        txHash: null,
+        blockNumber: null,
       },
+      alreadyRegistered: false,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("/api/register error:", err);
+    console.error("/api/upload error:", err);
 
     const message = err instanceof Error ? err.message : String(err);
-
-    // Handle rare race: if it became registered between our check and tx
-    if (message.includes("Document already exists") && hash) {
-      const existing = registryStore.get(hash);
-      return res.json({
-        message: "Document is registered",
-        hash,
-        file: fileMeta,
-        ipfs: existing
-          ? {
-              cid: existing.cid ?? null,
-              url: existing.url ?? null,
-              provider: existing.provider ?? null,
-            }
-          : { cid: null, url: null, provider: null },
-        chain: {
-          contractAddress: config.contractAddress,
-          txHash: null,
-          blockNumber: null,
-        },
-      });
-    }
-
     return res.status(500).json({ error: message });
   }
-});
+}
+
+// Backwards-compatible alias (older UI may call /api/register)
+app.post("/api/register", upload.single("file"), handleUpload);
+app.post("/api/upload", upload.single("file"), handleUpload);
 
 // Verify from file: compute hash -> view call
 app.post("/api/verify", upload.single("file"), async (req, res) => {
@@ -200,7 +177,6 @@ app.post("/api/verify-hash", async (req, res) => {
 });
 
 async function main() {
-  await registryStore.init();
   app.listen(config.port, () => {
     // eslint-disable-next-line no-console
     console.log(`Backend listening on http://localhost:${config.port}`);

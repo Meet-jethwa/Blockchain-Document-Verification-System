@@ -2,9 +2,12 @@ import { ethers } from "ethers";
 
 // Minimal ABI for Week 1 contract.
 const DOCUMENT_REGISTRY_ABI = [
-  "function registerDocument(bytes32 hash) external",
+  "function registerDocument(bytes32 hash, string cid) external",
   "function verifyDocument(bytes32 hash) external view returns (bool)",
-  "event DocumentRegistered(bytes32 hash, address indexed sender)",
+  "function verifyMyDocument(bytes32 hash) external view returns (bool)",
+  "function getDocument(bytes32 hash) external view returns (address owner, string cid, uint256 createdAt)",
+  "function getMyDocuments() external view returns (bytes32[] memory)",
+  "event DocumentRegistered(bytes32 hash, address indexed owner, string cid)",
 ];
 
 export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
@@ -42,7 +45,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
     provider,
     wallet,
     contract,
-    async registerDocumentHash(hash) {
+    async registerDocumentHash(hash, cid = "") {
       await assertContractDeployed();
       // Pre-check to avoid a revert (which can surface as "missing revert data" during estimateGas)
       // and to return a deterministic error message for duplicates.
@@ -55,7 +58,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
       if (exists) {
         throw new Error("Document already exists");
       }
-      const tx = await contract.registerDocument(hash);
+      const tx = await contract.registerDocument(hash, cid);
       const receipt = await tx.wait();
       return { txHash: tx.hash, receipt };
     },
@@ -63,6 +66,15 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
       await assertContractDeployed();
       try {
         return await contract.verifyDocument(hash);
+      } catch (err) {
+        rethrowAbiMismatch(err);
+      }
+    },
+    async getDocument(hash) {
+      await assertContractDeployed();
+      try {
+        const [owner, cid, createdAt] = await contract.getDocument(hash);
+        return { owner, cid, createdAt };
       } catch (err) {
         rethrowAbiMismatch(err);
       }

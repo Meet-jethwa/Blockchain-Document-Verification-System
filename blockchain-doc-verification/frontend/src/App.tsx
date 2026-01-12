@@ -1,7 +1,8 @@
 import './App.css'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { RegisterResponse, VerifyResponse } from './api'
 import { postFile } from './api'
+import { ethers } from 'ethers'
 
 function withHttps(url: string) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url
@@ -12,6 +13,23 @@ function shortHash(value: string, keep = 10) {
   if (!value) return ''
   if (value.length <= keep * 2 + 3) return value
   return `${value.slice(0, keep)}…${value.slice(-keep)}`
+}
+
+function shortAddr(addr: string) {
+  return shortHash(addr, 6)
+}
+
+const DOCUMENT_REGISTRY_ABI = [
+  'function registerDocument(bytes32 hash, string cid) external',
+  'function verifyDocument(bytes32 hash) external view returns (bool)',
+  'function verifyMyDocument(bytes32 hash) external view returns (bool)',
+  'function getDocument(bytes32 hash) external view returns (address owner, string cid, uint256 createdAt)',
+  'function getMyDocuments() external view returns (bytes32[] memory)',
+]
+
+async function hashFileKeccak256(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  return ethers.keccak256(new Uint8Array(buf))
 }
 
 function App() {
@@ -27,8 +45,116 @@ function App() {
   const [registerResult, setRegisterResult] = useState<RegisterResponse | null>(null)
   const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null)
 
+  const [walletAddress, setWalletAddress] = useState<string | null>(null)
+  const [walletChainId, setWalletChainId] = useState<number | null>(null)
+  const [walletError, setWalletError] = useState<string | null>(null)
+
+  const [contractAddress, setContractAddress] = useState<string | null>(null)
+  const [backendChainId, setBackendChainId] = useState<number | null>(null)
+  const [ipfsGatewayBaseUrl, setIpfsGatewayBaseUrl] = useState<string>('https://ipfs.io/ipfs/')
+
+  const [myDocs, setMyDocs] = useState<Array<{ hash: string; cid: string; createdAt: number; url: string }>>([])
+  const [myDocsLoading, setMyDocsLoading] = useState(false)
+  const [myDocsError, setMyDocsError] = useState<string | null>(null)
+
   const canRegister = useMemo(() => !!registerFile && !registerLoading, [registerFile, registerLoading])
   const canVerify = useMemo(() => !!verifyFile && !verifyLoading, [verifyFile, verifyLoading])
+
+  const walletConnected = !!walletAddress
+  const chainMismatch =
+    walletChainId != null && backendChainId != null ? walletChainId !== backendChainId : false
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadHealth() {
+      try {
+        const res = await fetch('/api/health')
+        const data = await res.json()
+        if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`)
+        if (cancelled) return
+        setContractAddress(String(data.contractAddress))
+        setBackendChainId(typeof data.chainId === 'number' ? data.chainId : Number(data.chainId))
+        if (data.ipfsGatewayBaseUrl) setIpfsGatewayBaseUrl(String(data.ipfsGatewayBaseUrl))
+      } catch {
+        // Non-fatal; UI can still render.
+      }
+    }
+    loadHealth()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    const eth = window.ethereum
+    if (!eth) return
+
+    const onAccountsChanged = (accounts: string[]) => {
+      setWalletAddress(accounts?.[0] ?? null)
+    }
+    const onChainChanged = (chainIdHex: string) => {
+      try {
+        setWalletChainId(Number(BigInt(chainIdHex)))
+      } catch {
+        setWalletChainId(null)
+      }
+    }
+
+    eth.on?.('accountsChanged', onAccountsChanged)
+    eth.on?.('chainChanged', onChainChanged)
+    return () => {
+      eth.removeListener?.('accountsChanged', onAccountsChanged)
+      eth.removeListener?.('chainChanged', onChainChanged)
+    }
+  }, [])
+
+  async function connectWallet() {
+    setWalletError(null)
+    const eth = window.ethereum
+    if (!eth) {
+      setWalletError('No wallet detected. Install MetaMask (or another EVM wallet).')
+      return
+    }
+    try {
+      const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[]
+      const chainIdHex = (await eth.request({ method: 'eth_chainId' })) as string
+      setWalletAddress(accounts?.[0] ?? null)
+      setWalletChainId(Number(BigInt(chainIdHex)))
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function getSignerAndContract() {
+    if (!contractAddress) throw new Error('Contract address not loaded. Is the backend running?')
+    const eth = window.ethereum
+    if (!eth) throw new Error('No wallet detected.')
+    const provider = new ethers.BrowserProvider(eth)
+    const signer = await provider.getSigner()
+    const contract = new ethers.Contract(contractAddress, DOCUMENT_REGISTRY_ABI, signer)
+    return { provider, signer, contract }
+  }
+
+  async function refreshMyDocuments() {
+    setMyDocsError(null)
+    setMyDocsLoading(true)
+    try {
+      const { contract } = await getSignerAndContract()
+      const hashes = (await contract.getMyDocuments()) as string[]
+      const docs = await Promise.all(
+        hashes.map(async (hash) => {
+          const [_owner, cid, createdAt] = (await contract.getDocument(hash)) as [string, string, bigint]
+          const url = `${ipfsGatewayBaseUrl}${cid}`
+          return { hash, cid, createdAt: Number(createdAt), url }
+        }),
+      )
+      setMyDocs(docs.slice().reverse())
+    } catch (err) {
+      setMyDocsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMyDocsLoading(false)
+    }
+  }
 
   async function onRegisterSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -38,8 +164,35 @@ function App() {
     setRegisterResult(null)
     setRegisterLoading(true)
     try {
-      const data = await postFile<RegisterResponse>('/api/register', registerFile)
-      setRegisterResult(data)
+      // Step 1: Upload to IPFS via backend (returns {hash, cid})
+      const upload = await postFile<RegisterResponse>('/api/upload', registerFile)
+      setRegisterResult(upload)
+
+      if (upload.alreadyRegistered) {
+        return
+      }
+
+      // Step 2: Register on-chain using the *connected wallet* (binds hash to wallet ⇒ prevents relay/replay)
+      if (!walletConnected) {
+        await connectWallet()
+      }
+      const { contract } = await getSignerAndContract()
+      if (!upload.ipfs?.cid) throw new Error('Missing CID from IPFS upload.')
+
+      const tx = await contract.registerDocument(upload.hash, upload.ipfs.cid)
+      const receipt = await tx.wait()
+      setRegisterResult({
+        ...upload,
+        message: 'Registered successfully (IPFS + on-chain, wallet-bound).',
+        chain: {
+          ...upload.chain,
+          txHash: tx.hash,
+          blockNumber: receipt?.blockNumber ?? null,
+        },
+      })
+
+      // Update "My documents"
+      await refreshMyDocuments()
     } catch (err) {
       setRegisterError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -55,8 +208,14 @@ function App() {
     setVerifyResult(null)
     setVerifyLoading(true)
     try {
-      const data = await postFile<VerifyResponse>('/api/verify', verifyFile)
-      setVerifyResult(data)
+      if (!walletConnected) {
+        await connectWallet()
+      }
+      const { contract } = await getSignerAndContract()
+      const hash = await hashFileKeccak256(verifyFile)
+
+      const verified = (await contract.verifyMyDocument(hash)) as boolean
+      setVerifyResult({ hash, verified })
     } catch (err) {
       setVerifyError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -78,10 +237,22 @@ function App() {
             <a href="#home">Home</a>
             <a href="#upload">Upload</a>
             <a href="#verify">Verify</a>
+            <a href="#mydocs">My Docs</a>
           </div>
-          <a className="navCta" href="/api/health" target="_blank" rel="noreferrer">
-            API Health
-          </a>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            {walletConnected ? (
+              <span className="muted" title={walletAddress ?? ''}>
+                {shortAddr(walletAddress ?? '')}
+              </span>
+            ) : (
+              <button className="btnGhost" type="button" onClick={connectWallet}>
+                Connect Wallet
+              </button>
+            )}
+            <a className="navCta" href="/api/health" target="_blank" rel="noreferrer">
+              API Health
+            </a>
+          </div>
         </div>
       </nav>
 
@@ -130,10 +301,20 @@ function App() {
       </header>
 
       <main className="container">
+        {(walletError || chainMismatch) && (
+          <div className="alert bad" style={{ marginTop: 18 }}>
+            {walletError ? walletError : null}
+            {walletError && chainMismatch ? ' ' : null}
+            {chainMismatch ? `Wrong network: wallet chainId=${walletChainId} but backend is on chainId=${backendChainId}.` : null}
+          </div>
+        )}
+
         <section id="upload" className="section">
           <div className="sectionHead">
             <h2>Upload Document</h2>
-            <p className="muted">Upload a file to IPFS and register its hash on the blockchain.</p>
+            <p className="muted">
+              Upload a file to IPFS, then register its hash on-chain using your connected wallet (prevents relay/replay).
+            </p>
           </div>
 
           <div className="panel">
@@ -203,7 +384,10 @@ function App() {
         <section id="verify" className="section">
           <div className="sectionHead">
             <h2>Verify Document</h2>
-            <p className="muted">Upload a document and we’ll check if its hash exists on-chain.</p>
+            <p className="muted">
+              Upload a document and we’ll verify that <span className="mono">hash</span> is registered by your connected
+              wallet (relay/replay-safe in-app).
+            </p>
           </div>
 
           <div className="panel">
@@ -234,6 +418,57 @@ function App() {
             )}
           </div>
         </section>
+
+        <section id="mydocs" className="section">
+          <div className="sectionHead">
+            <h2>My Documents</h2>
+            <p className="muted">Documents registered by your connected wallet. Open them via their IPFS CID.</p>
+          </div>
+
+          <div className="panel">
+            <div className="formRow" style={{ justifyContent: 'space-between' }}>
+              <button
+                className="btnPrimary"
+                type="button"
+                onClick={refreshMyDocuments}
+                disabled={!walletConnected || myDocsLoading}
+              >
+                {myDocsLoading ? 'Loading…' : 'Load My Docs'}
+              </button>
+              {contractAddress && (
+                <span className="muted mono" title={contractAddress}>
+                  Contract: {shortAddr(contractAddress)}
+                </span>
+              )}
+            </div>
+
+            {myDocsError && <div className="alert bad">{myDocsError}</div>}
+
+            {walletConnected && !myDocsLoading && myDocs.length === 0 && (
+              <div className="muted">No documents found for this wallet yet.</div>
+            )}
+
+            {myDocs.length > 0 && (
+              <div className="resultBox">
+                <div className="kvGrid">
+                  {myDocs.map((d) => (
+                    <div className="kvItem" key={d.hash}>
+                      <div className="k">CID</div>
+                      <div className="v">
+                        <a className="link" href={d.url} target="_blank" rel="noreferrer">
+                          {shortHash(d.cid, 18)}
+                        </a>
+                        <div className="muted mono" style={{ marginTop: 6 }}>
+                          {shortHash(d.hash, 14)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
       </main>
 
       <footer className="footer">
@@ -248,6 +483,7 @@ function App() {
           <div className="footerLinks">
             <a href="#upload">Upload</a>
             <a href="#verify">Verify</a>
+            <a href="#mydocs">My Docs</a>
             <a href="/api/health" target="_blank" rel="noreferrer">
               API Health
             </a>

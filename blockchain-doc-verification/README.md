@@ -10,8 +10,11 @@ This folder contains the Solidity contract and Hardhat scripts used by the backe
 
 Key functions:
 
-- `registerDocument(bytes32 hash)`
+- `registerDocument(bytes32 hash, string cid)`
 - `verifyDocument(bytes32 hash) → bool`
+- `verifyMyDocument(bytes32 hash) → bool`
+- `getMyDocuments() → bytes32[]`
+- `getDocument(bytes32 hash) → (owner, cid, createdAt)`
 
 ## Local development (Hardhat)
 
