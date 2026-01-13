@@ -10,7 +10,10 @@ dotenv.config({
 function mustGet(name) {
   const value = process.env[name];
   if (!value || value.trim().length === 0) {
-    throw new Error(`Missing required env var: ${name}`);
+    throw new Error(
+      `Missing required env var: ${name}. ` +
+        `Create backend/.env (copy from backend/env.example) or set the variable in your shell.`
+    );
   }
   return value.trim();
 }
@@ -44,12 +47,25 @@ function mustGetPrivateKey(name) {
   return value;
 }
 
+// Local-only default key provided by `hardhat node` (account #0).
+const HARDHAT_LOCAL_DEFAULT_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+function getPrivateKeyOrDefault() {
+  const value = getOptional("PRIVATE_KEY", HARDHAT_LOCAL_DEFAULT_KEY);
+  if (!isHex(value, 64)) {
+    throw new Error(`Invalid PRIVATE_KEY: expected 0x + 64 hex chars`);
+  }
+  return value;
+}
+
 export const config = {
   port: Number(getOptional("PORT", "8080")),
   corsOrigin: getOptional("CORS_ORIGIN", "*"),
 
-  rpcUrl: mustGet("RPC_URL"),
-  privateKey: mustGetPrivateKey("PRIVATE_KEY"),
+  // Defaults make local dev smoother when backend/.env is missing.
+  // For production/public networks, set these explicitly via backend/.env or hosting env vars.
+  rpcUrl: getOptional("RPC_URL", "http://127.0.0.1:8545"),
+  privateKey: getPrivateKeyOrDefault(),
   contractAddress: mustGetAddress("CONTRACT_ADDRESS"),
 
   ipfsDisabled: getOptional("IPFS_DISABLED", "false").toLowerCase() === "true",
