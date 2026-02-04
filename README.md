@@ -1,9 +1,17 @@
 # Blockchain Document Verification System
 
-Verify documents using a simple, tamper-evident flow:
+## What is this?
 
-- **Register**: upload file → backend uploads to IPFS + returns CID + hash → your wallet stores (hash, CID) on-chain
-- **Verify**: upload file → frontend hashes it → checks on-chain that *your wallet* registered that hash (prevents relay/replay in-app)
+This is a 3-part app that lets you **prove a document existed at a point in time** and later **verify** it has not been changed.
+
+- **Smart contract (`DocumentRegistry.sol`)** stores a document fingerprint (Keccak-256 hash) on-chain, linked to the registering wallet address.
+- **Backend (Express)** accepts file uploads, computes the hash, optionally uploads the file to IPFS (returns a CID), and exposes REST endpoints.
+- **Frontend (React/Vite)** is the user interface. It connects to MetaMask, calls the backend to get `hash + CID`, then your wallet sends the on-chain transaction.
+
+### How it works (high level)
+
+- **Register**: upload file → backend computes hash (and uploads to IPFS) → frontend asks MetaMask to register `(hash, CID)` on-chain.
+- **Verify**: upload file → frontend recomputes hash → checks the contract to confirm the hash is registered (and can also check ownership).
 
 Repository layout:
 
@@ -65,6 +73,19 @@ DocumentRegistry deployed to: 0x...
 ```
 
 Copy that address.
+
+### 3.1) MetaMask setup (recommended for the frontend)
+
+The frontend uses MetaMask to send transactions. Configure MetaMask for your local Hardhat node:
+
+1. Add a network:
+	- Network name: `Hardhat Local`
+	- RPC URL: `http://127.0.0.1:8545`
+	- Chain ID: `31337`
+	- Currency symbol: `ETH`
+2. Import an account (LOCAL ONLY): use Account #0 private key printed by `npm run node`.
+
+Never reuse the Hardhat private key on real networks.
 
 ### 4) Configure backend environment
 
@@ -128,7 +149,7 @@ The frontend proxies API calls to the backend (`/api/*` → `http://localhost:80
 
 Open the frontend and try:
 
-- **Register Document**: choose a PDF (or any file) → click Register → you should see “Registered Successfully” + hash + tx
+- **Register Document**: choose a PDF (or any file) → click Register → MetaMask prompts a transaction → you should see “Registered Successfully” + hash + tx
 - **Verify Document**: upload the same file → click Verify → you should see “Document Verified”
 
 If you upload a different file, it should show “Not Verified”.
@@ -141,6 +162,8 @@ Backend endpoints (multipart file field name is `file`):
 - `POST /api/register`
 - `POST /api/verify`
 - `POST /api/verify-hash` (JSON body: `{ "hash": "0x..." }`)
+
+Note: most file endpoints expect an owner wallet address in the `x-wallet-address` header (the frontend sets this automatically).
 
 ## Troubleshooting
 
