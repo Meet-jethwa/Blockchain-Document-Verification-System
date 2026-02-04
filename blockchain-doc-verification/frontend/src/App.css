@@ -349,3 +349,63 @@ input[type='file'] {
   gap: 14px;
   flex-wrap: wrap;
 }
+
+/* Document card layout helpers (alignment-only; keep existing colors) */
+.docContent {
+  display: grid;
+  gap: 10px;
+}
+
+.docMetaLine {
+  margin-top: 0;
+}
+
+.docSection {
+  display: grid;
+  gap: 8px;
+}
+
+.docHint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.docRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.docButtons {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.textInput {
+  flex: 1;
+  min-width: 260px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.textInputSm {
+  min-width: 220px;
+}
+
+.docFileInput {
+  flex: 1;
+  min-width: 260px;
+}
+
+.docCheck {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}

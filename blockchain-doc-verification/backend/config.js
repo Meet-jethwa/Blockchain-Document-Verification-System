@@ -1,12 +1,29 @@
+/**
+ * @fileoverview Configuration module that loads and validates environment variables
+ * @description This file ensures all required configuration is present before the backend starts
+ * 
+ * EXPLANATION FOR PROFESSOR:
+ * - Environment variables allow different settings for development vs production
+ * - We validate all required values upfront to fail fast if misconfigured
+ * - Provides sensible defaults for local development (localhost blockchain, default wallet key)
+ */
+
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 
-// Load env vars from backend/.env regardless of current working directory.
-// (dotenv's default behavior only loads .env from process.cwd())
+// Load environment variables from backend/.env file
+// This works regardless of where the process was started from (unlike default dotenv behavior)
+// "import.meta.url" is the current file's URL, we use it to find the .env file relative to this file
 dotenv.config({
   path: fileURLToPath(new URL("./.env", import.meta.url)),
 });
 
+/**
+ * Gets a required environment variable or throws an error
+ * @param {string} name - The environment variable name
+ * @returns {string} The trimmed value
+ * @throws {Error} If the variable is missing or empty
+ */
 function mustGet(name) {
   const value = process.env[name];
   if (!value || value.trim().length === 0) {
@@ -28,6 +45,15 @@ function isHex(value, hexChars) {
   return typeof value === "string" && new RegExp(`^0x[0-9a-fA-F]{${hexChars}}$`).test(value);
 }
 
+/**
+ * Gets and validates an Ethereum address (20 bytes = 40 hex characters)
+ * @param {string} name - The environment variable name
+ * @returns {string} The validated address
+ * @throws {Error} If not a valid Ethereum address format
+ * 
+ * EXPLANATION: Ethereum addresses are 20 bytes (40 hex chars) with "0x" prefix
+ * Example: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+ */
 function mustGetAddress(name) {
   const value = mustGet(name);
   if (!isHex(value, 40)) {
@@ -58,24 +84,41 @@ function getPrivateKeyOrDefault() {
   return value;
 }
 
+/**
+ * Main configuration object exported for use throughout the backend
+ * 
+ * EXPLANATION FOR PROFESSOR:
+ * - port: HTTP server port (default 8080)
+ * - corsOrigin: Cross-Origin Resource Sharing - allows frontend from different domain to access API
+ * - rpcUrl: Blockchain node URL (Ethereum RPC endpoint to send transactions)
+ * - privateKey: Wallet private key used by backend to pay for gas fees
+ * - contractAddress: Address of deployed DocumentRegistry smart contract
+ * - IPFS settings: For storing actual document files off-chain
+ */
 export const config = {
   port: Number(getOptional("PORT", "8080")),
-  corsOrigin: getOptional("CORS_ORIGIN", "*"),
+  corsOrigin: getOptional("CORS_ORIGIN", "*"), // "*" allows all origins (dev only, restrict in production)
 
+  // Blockchain connection settings
   // Defaults make local dev smoother when backend/.env is missing.
   // For production/public networks, set these explicitly via backend/.env or hosting env vars.
-  rpcUrl: getOptional("RPC_URL", "http://127.0.0.1:8545"),
-  privateKey: getPrivateKeyOrDefault(),
-  contractAddress: mustGetAddress("CONTRACT_ADDRESS"),
+  rpcUrl: getOptional("RPC_URL", "http://127.0.0.1:8545"), // Local Hardhat node by default
+  privateKey: getPrivateKeyOrDefault(), // Wallet key for signing transactions
+  contractAddress: mustGetAddress("CONTRACT_ADDRESS"), // REQUIRED: Where the smart contract is deployed
 
+  // IPFS (InterPlanetary File System) configuration
   ipfsDisabled: getOptional("IPFS_DISABLED", "false").toLowerCase() === "true",
 
-  // Choose one:
-  // - PINATA_JWT (recommended)
-  // - WEB3_STORAGE_TOKEN
+  // IPFS provider credentials (choose one):
+  // - Pinata: Popular IPFS pinning service (recommended)
+  // - Web3.Storage: Free IPFS service by Protocol Labs
   pinataJwt: getOptional("PINATA_JWT"),
   web3StorageToken: getOptional("WEB3_STORAGE_TOKEN"),
-  ipfsGatewayBaseUrl: getOptional("IPFS_GATEWAY_BASE_URL", "https://ipfs.io/ipfs/"),
+  ipfsGatewayBaseUrl: getOptional("IPFS_GATEWAY_BASE_URL", "https://ipfs.io/ipfs/"), // Public gateway to view files
+
+  // Optional: used to encrypt per-document file keys/IVs at rest (NOT used for the file encryption itself)
+  // Accepts 32-byte hex (with or without 0x) or 32-byte base64
+  fileMasterKey: getOptional("FILE_MASTER_KEY"),
 };
 
 

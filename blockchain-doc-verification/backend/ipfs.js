@@ -36,9 +36,31 @@ export function pickIpfsUploader({ pinataJwt, web3StorageToken, ipfsGatewayBaseU
   );
 }
 
+async function fetchViaGateway({ ipfsGatewayBaseUrl, cid }) {
+  if (!cid) throw new Error("Missing CID");
+  const base = String(ipfsGatewayBaseUrl || "");
+  if (!base) throw new Error("Missing IPFS gateway base URL");
+
+  let res;
+  try {
+    res = await axios.get(`${base}${cid}`, {
+      responseType: "arraybuffer",
+      maxBodyLength: Infinity,
+    });
+  } catch (err) {
+    throw new Error(axiosErrorMessage(err, "IPFS gateway fetch failed"));
+  }
+
+  return Buffer.from(res.data);
+}
+
 class DisabledUploader {
   async uploadBuffer() {
     return { cid: null, url: null, provider: "disabled", raw: null };
+  }
+
+  async fetchBuffer() {
+    throw new Error("IPFS is disabled");
   }
 }
 
@@ -77,6 +99,10 @@ class PinataUploader {
       raw: res.data,
     };
   }
+
+  async fetchBuffer({ cid }) {
+    return fetchViaGateway({ ipfsGatewayBaseUrl: this.ipfsGatewayBaseUrl, cid });
+  }
 }
 
 class Web3StorageUploader {
@@ -112,6 +138,10 @@ class Web3StorageUploader {
       provider: "web3.storage",
       raw: res.data,
     };
+  }
+
+  async fetchBuffer({ cid }) {
+    return fetchViaGateway({ ipfsGatewayBaseUrl: this.ipfsGatewayBaseUrl, cid });
   }
 }
 

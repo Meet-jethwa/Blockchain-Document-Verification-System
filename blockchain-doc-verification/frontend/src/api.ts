@@ -3,9 +3,24 @@ export type RegisterResponse = {
   hash: string
   file: { name: string; mimetype: string; size: number }
   ipfs: { cid: string | null; url: string | null; provider: string | null }
+  encryption?:
+    | { enabled: false }
+    | {
+        enabled: true
+        format: string
+        cipher: string
+        kdf: string
+        iterations: number
+      }
+    | {
+        enabled: true
+        cipher: string
+        keyStored?: boolean
+      }
   chain: { contractAddress: string; txHash: string | null; blockNumber: number | null }
   alreadyRegistered?: boolean
   existingOwner?: string | null
+  revoked?: boolean | null
 }
 
 export type VerifyResponse = {
@@ -21,19 +36,33 @@ async function parseJsonSafely(res: Response) {
   }
 }
 
-export async function postFile<T>(url: string, file: File): Promise<T> {
+function extractErrorMessage(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  if (!('error' in data)) return null
+  const err = (data as { error?: unknown }).error
+  return typeof err === 'string' ? err : null
+}
+
+export async function postFile<T>(
+  url: string,
+  file: File,
+  options?: { encrypt?: boolean; passphrase?: string; headers?: Record<string, string> },
+): Promise<T> {
   const formData = new FormData()
   formData.append('file', file)
+
+  if (options?.encrypt != null) formData.append('encrypt', options.encrypt ? 'true' : 'false')
+  if (options?.passphrase != null) formData.append('passphrase', options.passphrase)
 
   const res = await fetch(url, {
     method: 'POST',
     body: formData,
+    headers: options?.headers,
   })
 
   const data = await parseJsonSafely(res)
   if (!res.ok) {
-    const message = (data && typeof data === 'object' && 'error' in data && (data as any).error) ||
-      `Request failed (${res.status})`
+    const message = extractErrorMessage(data) || `Request failed (${res.status})`
     throw new Error(String(message))
   }
 
