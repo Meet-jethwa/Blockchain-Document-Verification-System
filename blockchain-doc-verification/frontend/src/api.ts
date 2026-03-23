@@ -26,6 +26,8 @@ export type RegisterResponse = {
 export type VerifyResponse = {
   hash: string
   verified: boolean
+  owner?: string | null
+  registeredAt?: number | null
 }
 
 async function parseJsonSafely(res: Response) {

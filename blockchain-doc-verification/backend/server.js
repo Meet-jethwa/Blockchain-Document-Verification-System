@@ -283,24 +283,10 @@ app.post("/api/upload", upload.single("file"), handleUpload);    // Current name
 
 /**
  * POST /api/verify - Verify document by uploading file
- * 
- * Request: multipart/form-data with file field named "file"
- * 
- * Response:
- * {
- *   hash: "0x...",     // Computed hash of uploaded file
- *   verified: true     // true if hash exists on blockchain, false otherwise
- * }
- * 
- * WORKFLOW EXPLANATION FOR PROFESSOR:
- * 1. User uploads file they want to verify
- * 2. Backend computes hash of the file
- * 3. Backend queries blockchain: "Does this hash exist?"
- * 4. Returns true/false
- * 
- * Use Case: Prove a document hasn't been modified
- * - If file was previously registered, hash will match → verified=true
- * - If file was modified even slightly, hash will be different → verified=false
+ *
+ * IMPORTANT: Verification reads ONLY from the blockchain (smart contract).
+ * The backend JSON store (documentStore.js) is NEVER consulted for verification.
+ * Flow: receive file → keccak256 hash → contract.verifyDocument(hash) on-chain → return result.
  */
 app.post("/api/verify", upload.single("file"), async (req, res) => {
   try {
@@ -309,7 +295,22 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
     }
     const hash = hashFileKeccak256(req.file.buffer);
     const verified = await chain.verifyDocumentHash(hash);
-    return res.json({ hash, verified });
+
+    let meta = null;
+    if (verified) {
+      try {
+        meta = await chain.getDocumentMeta(hash);
+      } catch {
+        // Non-fatal; just omit metadata.
+      }
+    }
+
+    return res.json({
+      hash,
+      verified,
+      owner: meta?.owner ?? null,
+      registeredAt: meta?.createdAt ? Number(meta.createdAt) : null,
+    });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/verify error:", err);
@@ -319,14 +320,9 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
 });
 
 /**
- * POST /api/verify-hash - Verify document by providing hash directly
- * 
- * Request body: { hash: "0x..." }
- * 
- * Response: { hash: "0x...", verified: true/false }
- * 
- * EXPLANATION: Alternative to /api/verify for when frontend already computed the hash
- * Useful if frontend uses MetaMask to compute hash (saves file upload bandwidth)
+ * POST /api/verify-hash - Verify document by providing pre-computed hash
+ *
+ * IMPORTANT: Reads ONLY from blockchain, never from JSON store.
  */
 app.post("/api/verify-hash", async (req, res) => {
   try {
@@ -335,7 +331,22 @@ app.post("/api/verify-hash", async (req, res) => {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
     }
     const verified = await chain.verifyDocumentHash(hash);
-    return res.json({ hash, verified });
+
+    let meta = null;
+    if (verified) {
+      try {
+        meta = await chain.getDocumentMeta(hash);
+      } catch {
+        // Non-fatal.
+      }
+    }
+
+    return res.json({
+      hash,
+      verified,
+      owner: meta?.owner ?? null,
+      registeredAt: meta?.createdAt ? Number(meta.createdAt) : null,
+    });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/verify-hash error:", err);

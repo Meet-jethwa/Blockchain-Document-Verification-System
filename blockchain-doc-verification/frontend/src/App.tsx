@@ -20,8 +20,8 @@ function shortAddr(addr: string) {
 }
 
 const DOCUMENT_REGISTRY_ABI = [
-  'function registerDocument(bytes32 hash, string cid) external',
-  'function addDocumentVersion(bytes32 rootHash, bytes32 hash, string cid) external',
+  'function registerDocument(bytes32 hash) external',
+  'function addDocumentVersion(bytes32 rootHash, bytes32 hash) external',
   'function verifyDocument(bytes32 hash) external view returns (bool)',
   'function verifyMyDocument(bytes32 hash) external view returns (bool)',
   'function revokeDocument(bytes32 hash) external',
@@ -29,25 +29,26 @@ const DOCUMENT_REGISTRY_ABI = [
   'function isDocumentRevoked(bytes32 hash) external view returns (bool)',
   'function getDocumentVersion(bytes32 hash) external view returns (bytes32 rootHash, uint256 version)',
   'function getDocumentVersions(bytes32 rootHash) external view returns (bytes32[] memory)',
+  'function getDocumentMeta(bytes32 hash) external view returns (address owner, uint256 createdAt)',
+  'function getMyDocuments() external view returns (bytes32[] memory)',
 
-  // Events used to discover shared documents (no extra on-chain storage needed)
+  'function grantRootViewer(bytes32 rootHash, address viewer) external',
+  'function revokeRootViewer(bytes32 rootHash, address viewer) external',
+  'function grantViewer(bytes32 hash, address viewer) external',
+  'function revokeViewer(bytes32 hash, address viewer) external',
+  'function canViewDocument(bytes32 hash, address user) external view returns (bool)',
+
+  'event DocumentRegistered(bytes32 indexed hash, address indexed owner)',
   'event ViewerAccessGranted(bytes32 indexed hash, address indexed owner, address indexed viewer)',
   'event ViewerAccessRevoked(bytes32 indexed hash, address indexed owner, address indexed viewer)',
   'event RootViewerAccessGranted(bytes32 indexed rootHash, address indexed owner, address indexed viewer)',
   'event RootViewerAccessRevoked(bytes32 indexed rootHash, address indexed owner, address indexed viewer)',
-
-  // Viewer access (root-level)
-  'function grantRootViewer(bytes32 rootHash, address viewer) external',
-  'function revokeRootViewer(bytes32 rootHash, address viewer) external',
-
-  // Viewer access (single-hash)
-  'function grantViewer(bytes32 hash, address viewer) external',
-  'function revokeViewer(bytes32 hash, address viewer) external',
-  'function canViewDocument(bytes32 hash, address user) external view returns (bool)',
-  'function getDocumentMeta(bytes32 hash) external view returns (address owner, uint256 createdAt)',
-  'function getDocument(bytes32 hash) external view returns (address owner, string cid, uint256 createdAt)',
-  'function getMyDocuments() external view returns (bytes32[] memory)',
 ]
+
+async function hashFileKeccak256(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  return ethers.keccak256(new Uint8Array(buf))
+}
 
 function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(u8.byteLength)
@@ -119,7 +120,6 @@ function App() {
 
   const [contractAddress, setContractAddress] = useState<string | null>(null)
   const [backendChainId, setBackendChainId] = useState<number | null>(null)
-  const [ipfsGatewayBaseUrl, setIpfsGatewayBaseUrl] = useState<string>('https://ipfs.io/ipfs/')
 
   const [myDocs, setMyDocs] = useState<
     Array<{ hash: string; rootHash: string; version: number; cid: string | null; createdAt: number; url: string | null; revoked: boolean }>
@@ -166,10 +166,16 @@ function App() {
   const [versionsLoadingByRoot, setVersionsLoadingByRoot] = useState<Record<string, boolean>>({})
   const [versionsErrorByRoot, setVersionsErrorByRoot] = useState<Record<string, string | null>>({})
 
+  const [verifyFile, setVerifyFile] = useState<File | null>(null)
+  const [verifyLoading, setVerifyLoading] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+  const [verifyResult, setVerifyResult] = useState<{ hash: string; verified: boolean; owner?: string | null } | null>(null)
+
   const canRegister = useMemo(
     () => !!registerFile && !registerLoading,
     [registerFile, registerLoading],
   )
+  const canVerify = useMemo(() => !!verifyFile && !verifyLoading, [verifyFile, verifyLoading])
 
   const walletConnected = !!walletAddress
   const chainMismatch =
@@ -185,7 +191,7 @@ function App() {
         if (cancelled) return
         setContractAddress(String(data.contractAddress))
         setBackendChainId(typeof data.chainId === 'number' ? data.chainId : Number(data.chainId))
-        if (data.ipfsGatewayBaseUrl) setIpfsGatewayBaseUrl(String(data.ipfsGatewayBaseUrl))
+        // ipfsGatewayBaseUrl is no longer needed on the frontend (CID not stored on-chain)
       } catch {
         // Non-fatal; UI can still render.
       }
@@ -282,28 +288,14 @@ function App() {
           const [rootHash, versionBig] = (await contract.getDocumentVersion(hash)) as [string, bigint]
           const revoked = (await contract.isDocumentRevoked(hash)) as boolean
 
-          if (revoked) {
-            return {
-              hash,
-              rootHash,
-              version: Number(versionBig),
-              cid: null,
-              createdAt: Number(createdAt),
-              url: null,
-              revoked: true,
-            }
-          }
-
-          const [, cid] = (await contract.getDocument(hash)) as [string, string, bigint]
-          const url = `${ipfsGatewayBaseUrl}${cid}`
           return {
             hash,
             rootHash,
             version: Number(versionBig),
-            cid,
+            cid: null,
             createdAt: Number(createdAt),
-            url,
-            revoked: false,
+            url: null,
+            revoked,
           }
         }),
       )
@@ -433,49 +425,28 @@ function App() {
           }
 
           const revoked = (await contract.isDocumentRevoked(hash)) as boolean
-          if (revoked) {
-            return {
-              hash,
-              owner: null,
-              rootHash,
-              version,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: true,
-              revoked: true,
-              status: 'Revoked',
-            }
+
+          let owner: string | null = null
+          let createdAtNum: number | null = null
+          try {
+            const [docOwner, docCreatedAt] = (await contract.getDocumentMeta(hash)) as [string, bigint]
+            owner = docOwner
+            createdAtNum = Number(docCreatedAt)
+          } catch {
+            // non-fatal
           }
 
-          try {
-            const [owner, cid, createdAt] = (await contract.getDocument(hash)) as [string, string, bigint]
-            const url = `${ipfsGatewayBaseUrl}${cid}`
-            return {
-              hash,
-              owner,
-              rootHash,
-              version,
-              cid,
-              createdAt: Number(createdAt),
-              url,
-              access: true,
-              revoked: false,
-              status: null,
-            }
-          } catch (err) {
-            return {
-              hash,
-              owner: null,
-              rootHash,
-              version,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: true,
-              revoked: false,
-              status: err instanceof Error ? err.message : String(err),
-            }
+          return {
+            hash,
+            owner,
+            rootHash,
+            version,
+            cid: null,
+            createdAt: createdAtNum,
+            url: null,
+            access: true,
+            revoked,
+            status: revoked ? 'Revoked' : null,
           }
         }),
       )
@@ -648,6 +619,40 @@ function App() {
     }
   }
 
+  async function onVerifySubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!verifyFile) return
+
+    setVerifyError(null)
+    setVerifyResult(null)
+    setVerifyLoading(true)
+    try {
+      if (!walletConnected) {
+        await connectWallet()
+      }
+      const { contract } = await getSignerAndContract()
+      const hash = await hashFileKeccak256(verifyFile)
+
+      const verified = (await contract.verifyMyDocument(hash)) as boolean
+
+      let owner: string | null = null
+      if (verified) {
+        try {
+          const [docOwner] = (await contract.getDocumentMeta(hash)) as [string, bigint]
+          owner = docOwner
+        } catch {
+          // non-fatal
+        }
+      }
+
+      setVerifyResult({ hash, verified, owner })
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setVerifyLoading(false)
+    }
+  }
+
   async function onRegisterSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!registerFile) return
@@ -678,7 +683,7 @@ function App() {
       // Step 2: Register the document hash on-chain (CID stays off-chain)
       const { contract } = await getSignerAndContract()
 
-      const tx = await contract.registerDocument(upload.hash, '')
+      const tx = await contract.registerDocument(upload.hash)
       const receipt = await tx.wait()
       setRegisterResult({
         ...upload,
@@ -758,7 +763,7 @@ function App() {
       }
 
       const { contract } = await getSignerAndContract()
-      const tx = await contract.addDocumentVersion(rootHash, upload.hash, '')
+      const tx = await contract.addDocumentVersion(rootHash, upload.hash)
       await tx.wait()
 
       setNewVersionStatusByRoot((prev) => ({ ...prev, [rootHash]: `Added new version (tx: ${shortHash(tx.hash, 10)}).` }))
@@ -798,6 +803,7 @@ function App() {
           <div className="navLinks">
             <a href="#home">Home</a>
             <a href="#upload">Upload</a>
+            <a href="#verify">Verify</a>
             <a href="#mydocs">My Docs</a>
             <a href="#sharedDocs">Shared Docs</a>
           </div>
@@ -958,6 +964,50 @@ function App() {
                     </a>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section id="verify" className="section">
+          <div className="sectionHead">
+            <h2>Verify Document</h2>
+            <p className="muted">
+              Upload a file to hash it and check if that hash is registered on-chain by your connected wallet.
+              This reads directly from the blockchain -- not from any JSON file or database.
+            </p>
+          </div>
+
+          <div className="panel">
+            <form className="formRow" onSubmit={onVerifySubmit}>
+              <label className="fileInput">
+                <span className="label">Choose file</span>
+                <input type="file" onChange={(e) => setVerifyFile(e.target.files?.[0] ?? null)} required />
+              </label>
+              <button className="btnPrimary" type="submit" disabled={!canVerify}>
+                {verifyLoading ? 'Verifying…' : 'Verify'}
+              </button>
+            </form>
+
+            {verifyError && <div className="alert bad">{verifyError}</div>}
+
+            {verifyResult && (
+              <div className="resultBox">
+                <div className={`status ${verifyResult.verified ? 'ok' : 'bad'}`}>
+                  {verifyResult.verified ? 'Document Verified (on-chain, wallet-bound)' : 'Not Verified'}
+                </div>
+                <div className="kvGrid">
+                  <div className="kvItem">
+                    <div className="k">Hash</div>
+                    <div className="v mono">{verifyResult.hash}</div>
+                  </div>
+                  {verifyResult.owner && (
+                    <div className="kvItem">
+                      <div className="k">Owner</div>
+                      <div className="v mono">{shortAddr(verifyResult.owner)}</div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1286,6 +1336,7 @@ function App() {
           </div>
           <div className="footerLinks">
             <a href="#upload">Upload</a>
+            <a href="#verify">Verify</a>
             <a href="#mydocs">My Docs</a>
             <a href="#sharedDocs">Shared Docs</a>
             <a href="/api/health" target="_blank" rel="noreferrer">
