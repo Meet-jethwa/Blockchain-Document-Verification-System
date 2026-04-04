@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blockchain Document Verification</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Blockchain Document Verification</h1>
+        <p class="muted">
+          Register a document (IPFS + on-chain hash) or verify an uploaded document against the blockchain.
+        </p>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <h2>Register Document</h2>
+          <p class="muted">Upload a file to store its hash on-chain (and upload to IPFS).</p>
+
+          <form id="registerForm">
+            <input id="registerFile" name="file" type="file" required />
+            <button id="registerBtn" type="submit">Register</button>
+            <div id="registerLoading" class="loading" hidden>Loading…</div>
+          </form>
+
+          <div id="registerResult" class="result" aria-live="polite"></div>
+        </div>
+
+        <div class="card">
+          <h2>Verify Document</h2>
+          <p class="muted">Upload a file to check if its hash exists on-chain.</p>
+
+          <form id="verifyForm">
+            <input id="verifyFile" name="file" type="file" required />
+            <button id="verifyBtn" type="submit">Verify</button>
+            <div id="verifyLoading" class="loading" hidden>Loading…</div>
+          </form>
+
+          <div id="verifyResult" class="result" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <footer class="footer muted">
+        <a href="/api/health" target="_blank" rel="noreferrer">API Health</a>
+      </footer>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
