@@ -30,6 +30,16 @@ export type VerifyResponse = {
   registeredAt?: number | null
 }
 
+const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() ?? ''
+const apiBaseUrl = rawApiBaseUrl.replace(/\/+$/, '')
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path
+  if (!apiBaseUrl) return path
+  if (!path) return apiBaseUrl
+  return path.startsWith('/') ? `${apiBaseUrl}${path}` : `${apiBaseUrl}/${path}`
+}
+
 async function parseJsonSafely(res: Response) {
   try {
     return await res.json()

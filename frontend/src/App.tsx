@@ -1,7 +1,7 @@
 import './App.css'
 import { useEffect, useMemo, useState } from 'react'
 import type { RegisterResponse } from './api'
-import { postFile } from './api'
+import { apiUrl, postFile } from './api'
 import { ethers } from 'ethers'
 
 function withHttps(url: string) {
@@ -69,7 +69,7 @@ function extractFilename(contentDisposition: string | null): string | null {
 }
 
 async function downloadDecryptedFromBackend(hash: string, walletAddress: string) {
-  const res = await fetch(`/api/documents/${hash}/download`, {
+  const res = await fetch(apiUrl(`/api/documents/${hash}/download`), {
     method: 'GET',
     headers: {
       'x-wallet-address': walletAddress,
@@ -185,7 +185,7 @@ function App() {
     let cancelled = false
     async function loadHealth() {
       try {
-        const res = await fetch('/api/health')
+        const res = await fetch(apiUrl('/api/health'))
         const data = await res.json()
         if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`)
         if (cancelled) return
@@ -668,7 +668,7 @@ function App() {
       if (!walletAddress) throw new Error('Connect wallet first.')
 
       // Step 1: Upload to backend (backend encrypts + uploads to IPFS; CID + key stay server-side)
-      const upload = await postFile<RegisterResponse>('/api/upload', registerFile, {
+      const upload = await postFile<RegisterResponse>(apiUrl('/api/upload'), registerFile, {
         headers: { 'x-wallet-address': walletAddress },
       })
       setRegisterResult({
@@ -754,7 +754,7 @@ function App() {
       }
       if (!walletAddress) throw new Error('Connect wallet first.')
 
-      const upload = await postFile<RegisterResponse>('/api/upload', file, {
+      const upload = await postFile<RegisterResponse>(apiUrl('/api/upload'), file, {
         headers: { 'x-wallet-address': walletAddress },
       })
 
@@ -825,7 +825,7 @@ function App() {
                 Connect Wallet
               </button>
             )}
-            <a className="navCta" href="/api/health" target="_blank" rel="noreferrer">
+            <a className="navCta" href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
               API Health
             </a>
           </div>
@@ -1339,7 +1339,7 @@ function App() {
             <a href="#verify">Verify</a>
             <a href="#mydocs">My Docs</a>
             <a href="#sharedDocs">Shared Docs</a>
-            <a href="/api/health" target="_blank" rel="noreferrer">
+            <a href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
               API Health
             </a>
           </div>
