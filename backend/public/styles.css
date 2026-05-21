@@ -1,0 +1,116 @@
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #fafafa;
+  color: #111;
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 40px;
+}
+
+.header {
+  margin-bottom: 18px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.muted {
+  color: #555;
+  margin: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.card {
+  border: 1px solid #e6e6e6;
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+input[type="file"] {
+  width: 100%;
+}
+
+button {
+  width: fit-content;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #111;
+  background: #111;
+  color: #fff;
+  cursor: pointer;
+}
+
+button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.loading {
+  font-size: 14px;
+  color: #333;
+}
+
+.result {
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.result .ok {
+  color: #0b6b2b;
+  font-weight: 600;
+}
+
+.result .bad {
+  color: #9a1a1a;
+  font-weight: 600;
+}
+
+.result code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+
+.footer {
+  margin-top: 18px;
+  font-size: 13px;
+}

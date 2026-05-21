@@ -1,0 +1,8 @@
+node_modules/
+artifacts/
+cache/
+.env
+backend/.env
+**/.env
+.DS_Store
+backend/data/
