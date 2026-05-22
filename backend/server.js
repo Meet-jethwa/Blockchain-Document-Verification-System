@@ -281,18 +281,64 @@ async function handleUpload(req, res) {
       } catch {
         // omit
       }
-      // Attempt to include any backend-stored IPFS info for this hash
+
+      if (existing?.owner && String(existing.owner).toLowerCase() !== String(ownerAddress).toLowerCase()) {
+        return res.status(403).json({
+          error: "This document hash is registered by another wallet.",
+        });
+      }
+
+      // Attempt to include any backend-stored IPFS info for this hash.
+      // If record is missing (e.g., backend redeploy wiped local JSON), recreate it
+      // so the owner can download/view this document again without a new on-chain tx.
       let dbDoc = null;
       try {
         dbDoc = await getDocument(hash);
       } catch {}
+
+      if (!dbDoc) {
+        const { encrypted, key, iv } = encryptFile(buffer);
+
+        const ipfsResult = await ipfs.uploadBuffer({
+          buffer: encrypted,
+          filename: `${originalname || "document"}.enc`,
+        });
+
+        const keyRecord = masterKey ? wrapSecret(key, masterKey) : { alg: "raw", data: key.toString("base64") };
+        const ivRecord = masterKey ? wrapSecret(iv, masterKey) : { alg: "raw", data: iv.toString("base64") };
+
+        await putDocument(hash, {
+          hash,
+          owner: ownerAddress,
+          ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
+          file: fileMeta,
+          encryption: {
+            alg: "aes-256-cbc",
+            key: keyRecord,
+            iv: ivRecord,
+            wrapped: !!masterKey,
+          },
+          createdAt: Date.now(),
+        });
+
+        dbDoc = {
+          hash,
+          owner: ownerAddress,
+          ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
+          file: fileMeta,
+          encryption: { alg: "aes-256-cbc", wrapped: !!masterKey },
+          createdAt: Date.now(),
+        };
+      }
 
       const ipfsInfo = dbDoc?.ipfs?.cid
         ? { cid: dbDoc.ipfs.cid, url: `${config.ipfsGatewayBaseUrl}${dbDoc.ipfs.cid}`, provider: dbDoc.ipfs.provider ?? null }
         : { cid: null, url: null, provider: null };
 
       return res.json({
-        message: "This document is already registered.",
+        message: dbDoc?.ipfs?.cid
+          ? "This document is already registered. Backend storage is available."
+          : "This document is already registered.",
         hash,
         file: fileMeta,
         alreadyRegistered: true,
