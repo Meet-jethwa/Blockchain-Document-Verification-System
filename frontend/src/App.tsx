@@ -173,6 +173,7 @@ function downloadBytes(bytes: Uint8Array, filename: string, mimetype: string) {
 }
 
 function App() {
+  const hiddenMyDocsStorageKey = 'docuchain:hiddenMyDocHashes'
   const [registerFile, setRegisterFile] = useState<File | null>(null)
 
   const [registerLoading, setRegisterLoading] = useState(false)
@@ -239,6 +240,16 @@ function App() {
   const [versionsByRootHash, setVersionsByRootHash] = useState<Record<string, string[] | null>>({})
   const [versionsLoadingByRoot, setVersionsLoadingByRoot] = useState<Record<string, boolean>>({})
   const [versionsErrorByRoot, setVersionsErrorByRoot] = useState<Record<string, string | null>>({})
+  const [hiddenMyDocHashes, setHiddenMyDocHashes] = useState<string[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(hiddenMyDocsStorageKey)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : []
+    } catch {
+      return []
+    }
+  })
 
   const canRegister = useMemo(
     () => !!registerFile && !registerLoading,
@@ -248,6 +259,14 @@ function App() {
   const walletConnected = !!walletAddress
   const chainMismatch =
     walletChainId != null && backendChainId != null ? walletChainId !== backendChainId : false
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(hiddenMyDocsStorageKey, JSON.stringify(hiddenMyDocHashes))
+    } catch {
+      // Non-fatal for private/incognito modes.
+    }
+  }, [hiddenMyDocHashes])
 
   useEffect(() => {
     let cancelled = false
@@ -367,12 +386,37 @@ function App() {
           }
         }),
       )
-      setMyDocs(docs.slice().reverse())
+      setMyDocs(docs.filter((d) => !hiddenMyDocHashes.includes(d.hash)).slice().reverse())
     } catch (err) {
       setMyDocsError(err instanceof Error ? err.message : String(err))
     } finally {
       setMyDocsLoading(false)
     }
+  }
+
+  function removeMyDocument(hash: string) {
+    setMyDocs((prev) => prev.filter((d) => d.hash !== hash))
+    setHiddenMyDocHashes((prev) => (prev.includes(hash) ? prev : [...prev, hash]))
+    setMyDownloadStatusByHash((prev) => {
+      const next = { ...prev }
+      delete next[hash]
+      return next
+    })
+    setMyViewStatusByHash((prev) => {
+      const next = { ...prev }
+      delete next[hash]
+      return next
+    })
+    setShareStatusByHash((prev) => {
+      const next = { ...prev }
+      delete next[hash]
+      return next
+    })
+    setMyDownloadProofByHash((prev) => {
+      const next = { ...prev }
+      delete next[hash]
+      return next
+    })
   }
 
   async function grantViewerAccess(hash: string, viewer: string) {
@@ -1275,6 +1319,13 @@ function App() {
                             onClick={() => downloadMyHash(d.hash)}
                           >
                             {myDownloadLoadingByHash[d.hash] ? 'Downloading…' : 'Download'}
+                          </button>
+                          <button
+                            className="btnGhost"
+                            type="button"
+                            onClick={() => removeMyDocument(d.hash)}
+                          >
+                            Delete
                           </button>
                         </div>
 
