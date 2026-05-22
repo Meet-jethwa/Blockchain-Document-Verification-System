@@ -430,11 +430,7 @@ app.get("/api/documents/:hash/download", async (req, res) => {
         : unwrapSecret(doc.encryption.iv, masterKey);
 
     const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes);
-
-    // Integrity check: compute hash of downloaded plaintext and verify it's registered on-chain
     const downloadedHash = hashFileKeccak256(plaintext);
-
-    // If the downloaded file's hash does not exist on-chain, refuse to return the file
     const existsOnChain = await chain.documentExists(downloadedHash);
     if (!existsOnChain) {
       return res.status(412).json({
@@ -442,14 +438,10 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       });
     }
 
-    // Fetch on-chain metadata for user-facing proof (do NOT expose document hash).
-    // Use getDocumentMeta which returns (owner, createdAt) and does NOT require the caller
-    // to be an approved viewer (unlike getDocument which enforces access control).
     let onchain = null;
     try {
-      onchain = await chain.getDocumentMeta(downloadedHash); // { owner, createdAt }
+      onchain = await chain.getRegistrationProof(downloadedHash); 
     } catch {
-      // If metadata lookup fails, continue but omit metadata headers
       onchain = null;
     }
 
@@ -463,6 +455,7 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     res.setHeader("X-Document-Integrity-Message", "Document integrity verified: record found on blockchain");
     if (onchain && onchain.owner) res.setHeader("X-Document-Owner", String(onchain.owner));
     if (onchain && onchain.createdAt) res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
+    if (onchain && onchain.blockNumber != null) res.setHeader("X-Document-Block-Number", String(onchain.blockNumber));
     if (config.contractAddress) res.setHeader("X-Document-Contract", String(config.contractAddress));
 
     return res.send(plaintext);

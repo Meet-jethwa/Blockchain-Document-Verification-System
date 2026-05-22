@@ -373,8 +373,6 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
     async getDocument(hash) {
       await assertContractDeployed();
       try {
-        // Contract returns array: [owner, cid, createdAt]
-				// We destructure it into named variables
 				const [owner, cid, createdAt] = await contract.getDocument(hash);
         return { owner, cid, createdAt };
       } catch (err) {
@@ -392,6 +390,30 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 			try {
 				const [owner, createdAt] = await contract.getDocumentMeta(hash);
 				return { owner, createdAt };
+			} catch (err) {
+				rethrowAbiMismatch(err);
+			}
+		},
+
+		async getRegistrationProof(hash) {
+			await assertContractDeployed();
+			try {
+				const fragment = contract.interface.getEvent('DocumentRegistered');
+				const topics = contract.interface.encodeFilterTopics(fragment, [hash]);
+				const logs = await provider.getLogs({
+					address: normalizedAddress,
+					topics,
+					fromBlock: 0,
+					toBlock: 'latest',
+				});
+				const log = logs[0];
+				if (!log) return null;
+				const [owner, createdAt] = await contract.getDocumentMeta(hash);
+				return {
+					owner,
+					createdAt,
+					blockNumber: log.blockNumber ?? null,
+				};
 			} catch (err) {
 				rethrowAbiMismatch(err);
 			}
