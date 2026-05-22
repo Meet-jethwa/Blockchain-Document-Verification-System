@@ -827,7 +827,9 @@ function App() {
       })
       setRegisterResult({
         ...upload,
-        message: 'Accept the transaction in MetaMask.',
+        message: upload.alreadyRegistered
+          ? (upload.message ?? 'This document hash is already registered on-chain. No new transaction is required.')
+          : 'Accept the transaction in MetaMask.',
       })
 
       if (upload.alreadyRegistered) {
