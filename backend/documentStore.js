@@ -8,9 +8,10 @@ const DATA_DIR = path.join(__dirname, "data");
 const STORE_PATH = path.join(DATA_DIR, "documents.json");
 
 const mongoUri = process.env.MONGODB_URI?.trim();
-const mongoClient = mongoUri ? new MongoClient(mongoUri) : null;
+let mongoClient = mongoUri ? new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2500 }) : null;
 let mongoDb = null;
 let mongoConnectPromise = null;
+let mongoDisabled = false;
 let writeQueue = Promise.resolve();
 
 async function ensureDataDir() {
@@ -43,13 +44,26 @@ async function saveJsonStore(store) {
 }
 
 async function ensureMongo() {
-  if (!mongoClient) return null;
+  if (!mongoClient || mongoDisabled) return null;
   if (mongoDb) return mongoDb;
   if (!mongoConnectPromise) {
-    mongoConnectPromise = mongoClient.connect().then(() => {
-      mongoDb = mongoClient.db();
-      return mongoDb;
-    });
+    mongoConnectPromise = mongoClient
+      .connect()
+      .then(() => {
+        mongoDb = mongoClient.db();
+        return mongoDb;
+      })
+      .catch((err) => {
+        mongoDisabled = true;
+        mongoClient = null;
+        mongoConnectPromise = null;
+        mongoDb = null;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[documentStore] MongoDB unavailable (${err instanceof Error ? err.message : String(err)}); falling back to JSON store.`,
+        );
+        return null;
+      });
   }
   return mongoConnectPromise;
 }
