@@ -1,3 +1,4 @@
+import { MongoClient } from "mongodb";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,13 +7,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const STORE_PATH = path.join(DATA_DIR, "documents.json");
 
+const mongoUri = process.env.MONGODB_URI?.trim();
+const mongoClient = mongoUri ? new MongoClient(mongoUri) : null;
+let mongoDb = null;
+let mongoConnectPromise = null;
 let writeQueue = Promise.resolve();
 
 async function ensureDataDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 }
 
-async function loadStore() {
+async function loadJsonStore() {
   await ensureDataDir();
   try {
     const raw = await fs.readFile(STORE_PATH, "utf8");
@@ -30,11 +35,28 @@ async function loadStore() {
   }
 }
 
-async function saveStore(store) {
+async function saveJsonStore(store) {
   await ensureDataDir();
   const tmp = `${STORE_PATH}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(store, null, 2), "utf8");
   await fs.rename(tmp, STORE_PATH);
+}
+
+async function ensureMongo() {
+  if (!mongoClient) return null;
+  if (mongoDb) return mongoDb;
+  if (!mongoConnectPromise) {
+    mongoConnectPromise = mongoClient.connect().then(() => {
+      mongoDb = mongoClient.db();
+      return mongoDb;
+    });
+  }
+  return mongoConnectPromise;
+}
+
+async function getCollection() {
+  const db = await ensureMongo();
+  return db ? db.collection("documents") : null;
 }
 
 export async function putDocument(hash, doc) {
@@ -43,9 +65,19 @@ export async function putDocument(hash, doc) {
   }
 
   writeQueue = writeQueue.then(async () => {
-    const store = await loadStore();
+    const collection = await getCollection();
+    if (collection) {
+      await collection.updateOne(
+        { _id: hash },
+        { $set: { ...doc, _id: hash } },
+        { upsert: true },
+      );
+      return;
+    }
+
+    const store = await loadJsonStore();
     store.documents[hash] = doc;
-    await saveStore(store);
+    await saveJsonStore(store);
   });
 
   await writeQueue;
@@ -55,6 +87,13 @@ export async function getDocument(hash) {
   if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
     throw new Error("getDocument: invalid hash");
   }
-  const store = await loadStore();
+
+  const collection = await getCollection();
+  if (collection) {
+    const doc = await collection.findOne({ _id: hash }, { projection: { _id: 0 } });
+    return doc ?? null;
+  }
+
+  const store = await loadJsonStore();
   return store.documents[hash] ?? null;
 }

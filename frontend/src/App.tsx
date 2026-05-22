@@ -192,7 +192,6 @@ function App() {
   const [myDocsError, setMyDocsError] = useState<string | null>(null)
   const [myDownloadLoadingByHash, setMyDownloadLoadingByHash] = useState<Record<string, boolean>>({})
   const [myDownloadStatusByHash, setMyDownloadStatusByHash] = useState<Record<string, string | null>>({})
-  const [myDownloadProofByHash, setMyDownloadProofByHash] = useState<Record<string, { owner: string; recordedAt: string; blockNumber: string; hash: string; verified: boolean } | null>>({})
   const [myViewLoadingByHash, setMyViewLoadingByHash] = useState<Record<string, boolean>>({})
   const [myViewStatusByHash, setMyViewStatusByHash] = useState<Record<string, string | null>>({})
 
@@ -403,11 +402,6 @@ function App() {
       return next
     })
     setShareStatusByHash((prev) => {
-      const next = { ...prev }
-      delete next[hash]
-      return next
-    })
-    setMyDownloadProofByHash((prev) => {
       const next = { ...prev }
       delete next[hash]
       return next
@@ -714,44 +708,15 @@ function App() {
 
   async function downloadMyHash(hash: string) {
     setMyDownloadStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setMyDownloadProofByHash((prev) => ({ ...prev, [hash]: null }))
     setMyDownloadLoadingByHash((prev) => ({ ...prev, [hash]: true }))
     try {
       if (!walletConnected) {
         await connectWallet()
       }
       if (!walletAddress) throw new Error('Connect wallet first.')
-      const result = await downloadDecryptedFromBackend(hash, walletAddress)
-      const owner = result.meta.owner ?? 'unknown'
-      const recordedAt = result.meta.recordedAt ? new Date(result.meta.recordedAt * 1000) : null
-      const recordedAtStr = recordedAt ? recordedAt.toLocaleString() : 'unknown date'
-      const blockNumberStr = result.meta.blockNumber != null ? String(result.meta.blockNumber) : 'unknown'
-      setMyDownloadStatusByHash((prev) => ({
-        ...prev,
-        [hash]: 'Downloaded document is verified',
-      }))
-      setMyDownloadProofByHash((prev) => ({
-        ...prev,
-        [hash]: {
-          owner,
-          recordedAt: recordedAtStr,
-          blockNumber: blockNumberStr,
-          hash: result.hash,
-          verified: hashesMatch(result.hash, hash),
-        },
-      }))
+      await downloadDecryptedFromBackend(hash, walletAddress)
     } catch (err) {
       setMyDownloadStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-      setMyDownloadProofByHash((prev) => ({
-        ...prev,
-        [hash]: {
-          owner: 'unknown',
-          recordedAt: 'unknown date',
-          blockNumber: 'unknown',
-          hash,
-          verified: false,
-        },
-      }))
     } finally {
       setMyDownloadLoadingByHash((prev) => ({ ...prev, [hash]: false }))
     }
@@ -766,10 +731,6 @@ function App() {
 
       const result = await fetchDecryptedDocumentFromBackend(hash, walletAddress)
       openBytesInNewTab(result.bytes, result.mimetype)
-      setMyViewStatusByHash((prev) => ({
-        ...prev,
-        [hash]: 'Preview opened in a new tab.',
-      }))
     } catch (err) {
       setMyViewStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
     } finally {
@@ -1256,36 +1217,9 @@ function App() {
                           </button>
                         </div>
 
-                        {myViewStatusByHash[d.hash] && (
-                          <div
-                            className={`alert ${/(preview|opened|integrity)/i.test(myViewStatusByHash[d.hash] || '') ? 'ok' : 'bad'}`}
-                          >
-                            {myViewStatusByHash[d.hash]}
-                          </div>
-                        )}
+                        {myViewStatusByHash[d.hash] && <div className="alert bad">{myViewStatusByHash[d.hash]}</div>}
 
-                        {myDownloadStatusByHash[d.hash] && (
-                          <div
-                            className={`alert ${/(download|integrity)/i.test(myDownloadStatusByHash[d.hash] || '') ? 'ok' : 'bad'}`}
-                          >
-                            {myDownloadStatusByHash[d.hash]}
-                          </div>
-                        )}
-                        {myDownloadProofByHash[d.hash] && (
-                          <div className="resultBox" style={{ marginTop: 10 }}>
-                            {myDownloadProofByHash[d.hash]?.verified && (
-                              <div className="status ok" style={{ marginBottom: 10 }}>
-                                Hash verified
-                              </div>
-                            )}
-                            <div className="kvGrid">
-                              <div className="kvItem"><div className="k">Registered on-chain by</div><div className="v mono">{myDownloadProofByHash[d.hash]?.owner}</div></div>
-                              <div className="kvItem"><div className="k">Date + time</div><div className="v mono">{myDownloadProofByHash[d.hash]?.recordedAt}</div></div>
-                              <div className="kvItem"><div className="k">Hash in blockchain</div><div className="v mono">{myDownloadProofByHash[d.hash]?.hash}</div></div>
-                              <div className="kvItem"><div className="k">Download Document Hash</div><div className="v mono">{myDownloadProofByHash[d.hash]?.hash}</div></div>
-                            </div>
-                          </div>
-                        )}
+                        {myDownloadStatusByHash[d.hash] && <div className="alert bad">{myDownloadStatusByHash[d.hash]}</div>}
                         <div className="muted mono docMetaLine">
                           {shortHash(d.hash, 14)}
                         </div>
