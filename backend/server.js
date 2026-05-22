@@ -17,6 +17,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { config } from "./config.js";
@@ -80,6 +81,7 @@ const ipfs = pickIpfsUploader({
 // Get current directory path (needed for ES modules)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
+const publicIndexPath = path.join(publicDir, "index.html");
 
 const masterKey = getMasterKeyFromEnv(config.fileMasterKey);
 
@@ -169,12 +171,18 @@ async function buildVerificationResponse(hash) {
  * This provides a simple web UI for testing the API
  * Files: index.html, app.js, styles.css
  */
-app.use(express.static(publicDir));
+if (existsSync(publicIndexPath)) {
+  app.use(express.static(publicDir));
 
-// Serve index.html at root path
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(publicDir, "index.html"));
-});
+  // Serve index.html at root path
+  app.get("/", (_req, res) => {
+    res.sendFile(publicIndexPath);
+  });
+} else {
+  app.get("/", (_req, res) => {
+    res.json({ ok: true, message: "Backend API is running" });
+  });
+}
 
 /**
  * GET /api/health - Health check endpoint
