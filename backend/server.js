@@ -281,6 +281,16 @@ async function handleUpload(req, res) {
       } catch {
         // omit
       }
+      // Attempt to include any backend-stored IPFS info for this hash
+      let dbDoc = null;
+      try {
+        dbDoc = await getDocument(hash);
+      } catch {}
+
+      const ipfsInfo = dbDoc?.ipfs?.cid
+        ? { cid: dbDoc.ipfs.cid, url: `${config.ipfsGatewayBaseUrl}${dbDoc.ipfs.cid}`, provider: dbDoc.ipfs.provider ?? null }
+        : { cid: null, url: null, provider: null };
+
       return res.json({
         message: "This document is already registered.",
         hash,
@@ -288,7 +298,7 @@ async function handleUpload(req, res) {
         alreadyRegistered: true,
         existingOwner: existing?.owner ?? null,
         revoked: revoked ?? null,
-        ipfs: { cid: null, url: null, provider: null },
+        ipfs: ipfsInfo,
         encryption: { enabled: true, cipher: "AES-256-CBC", keyStored: true },
         chain: {
           contractAddress: config.contractAddress,
@@ -331,9 +341,9 @@ async function handleUpload(req, res) {
       hash,
       file: fileMeta,
       ipfs: {
-        cid: null,
-        url: null,
-        provider: ipfsResult.provider,
+        cid: ipfsResult.cid ?? null,
+        url: ipfsResult.url ?? (ipfsResult.cid ? `${config.ipfsGatewayBaseUrl}${ipfsResult.cid}` : null),
+        provider: ipfsResult.provider ?? null,
       },
       encryption: { enabled: true, cipher: "AES-256-CBC", keyStored: true },
       chain: {
