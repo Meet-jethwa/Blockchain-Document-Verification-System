@@ -1,6 +1,6 @@
 import './App.css'
 import { useEffect, useMemo, useState } from 'react'
-import type { RegisterResponse, VerifyResponse } from './api'
+import type { RegisterResponse } from './api'
 import { postFile } from './api'
 import { ethers } from 'ethers'
 
@@ -25,11 +25,6 @@ function shortHash(value: string, keep = 10) {
 
 function shortAddr(addr: string) {
   return shortHash(addr, 6)
-}
-
-function formatDateTime(value: number | null | undefined) {
-  if (value == null) return 'unknown'
-  return new Date(value * 1000).toLocaleString()
 }
 
 function hashesMatch(left: string, right: string) {
@@ -771,11 +766,9 @@ function App() {
 
       const result = await fetchDecryptedDocumentFromBackend(hash, walletAddress)
       openBytesInNewTab(result.bytes, result.mimetype)
-
-      const recordedAtStr = result.meta.recordedAt ? new Date(result.meta.recordedAt * 1000).toLocaleString() : 'unknown time'
       setMyViewStatusByHash((prev) => ({
         ...prev,
-        [hash]: `Preview opened in a new tab — registered on-chain by ${result.meta.owner ?? 'unknown'} on ${recordedAtStr} (contract ${result.meta.contract ?? 'unknown'}).`,
+        [hash]: 'Preview opened in a new tab.',
       }))
     } catch (err) {
       setMyViewStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
@@ -993,36 +986,6 @@ function App() {
   const registerIpfsUrl = registerResult?.ipfs?.url ? withHttps(registerResult.ipfs.url) : null
 
 
-  const [verifyFile, setVerifyFile] = useState<File | null>(null)
-  const [verifying, setVerifying] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null)
-
-  async function computeKeccak(file: File) {
-    const ab = await file.arrayBuffer()
-    const u8 = new Uint8Array(ab)
-    return ethers.keccak256(u8)
-  }
-
-  async function handleVerifyFile(e?: React.FormEvent) {
-    if (e) e.preventDefault()
-    if (!verifyFile) return
-    try {
-      setVerifying(true)
-      const hash = await computeKeccak(verifyFile)
-      const res = await fetch(apiUrl('/api/verify-hash'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-wallet-address': walletAddress ?? '' },
-        body: JSON.stringify({ hash }),
-      })
-      const data = await res.json()
-      setVerifyResult(data as VerifyResponse)
-    } catch (err) {
-      setVerifyResult(null)
-    } finally {
-      setVerifying(false)
-    }
-  }
-
   return (
     <div className="site">
       <nav className="nav">
@@ -1194,42 +1157,6 @@ function App() {
                     </a>
                   </div>
                 )}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section id="verify" className="section">
-          <div className="sectionHead">
-            <h2>Verify Document (simple)</h2>
-            <p className="muted">Choose a file and click Verify. The app computes the hash first, then checks the blockchain and shows any stored document details.</p>
-          </div>
-
-          <div className="panel">
-            <form className="formRow" onSubmit={handleVerifyFile}>
-              <input type="file" onChange={(e) => setVerifyFile(e.target.files?.[0] ?? null)} />
-              <button className="btnPrimary" type="submit" disabled={!verifyFile || verifying}>
-                {verifying ? 'Verifying…' : 'Verify'}
-              </button>
-            </form>
-
-            {verifyResult && (
-              <div className="resultBox">
-                <div className={`status ${verifyResult.verified ? 'ok' : 'bad'}`}>
-                  {verifyResult.verified ? 'Verified on-chain' : verifyResult.existsOnChain ? 'Found but revoked' : 'Not found on-chain'}
-                </div>
-                <div className="kvGrid">
-                  <div className="kvItem"><div className="k">Hash</div><div className="v mono">{verifyResult.hash}</div></div>
-                  <div className="kvItem"><div className="k">Exists on chain</div><div className="v">{String(verifyResult.existsOnChain)}</div></div>
-                  <div className="kvItem"><div className="k">Verified</div><div className="v">{String(verifyResult.verified)}</div></div>
-                  <div className="kvItem"><div className="k">Revoked</div><div className="v">{String(verifyResult.revoked)}</div></div>
-                  <div className="kvItem"><div className="k">Owner</div><div className="v mono">{verifyResult.onChain?.owner ?? verifyResult.database?.owner ?? 'unknown'}</div></div>
-                  <div className="kvItem"><div className="k">Created</div><div className="v">{formatDateTime(verifyResult.onChain?.createdAt ?? verifyResult.database?.createdAt)}</div></div>
-                  <div className="kvItem"><div className="k">Block</div><div className="v">{verifyResult.onChain?.blockNumber ?? 'unknown'}</div></div>
-                  <div className="kvItem"><div className="k">DB record</div><div className="v">{verifyResult.database ? 'found' : 'missing'}</div></div>
-                  <div className="kvItem"><div className="k">Filename</div><div className="v">{verifyResult.database?.file?.name ?? verifyResult.source?.filename ?? 'unknown'}</div></div>
-                  <div className="kvItem"><div className="k">Mimetype</div><div className="v">{verifyResult.database?.file?.mimetype ?? verifyResult.source?.mimetype ?? 'unknown'}</div></div>
-                </div>
               </div>
             )}
           </div>
