@@ -107,6 +107,63 @@ function requireRequesterAddress(req, res, role = "requester") {
   return address;
 }
 
+function normalizeOnchainProof(hash, proof, revoked, dbDoc) {
+  return {
+    hash,
+    existsOnChain: !!proof || revoked === false,
+    verified: !!proof && !revoked,
+    revoked: !!revoked,
+    onChain: proof
+      ? {
+          owner: proof.owner ?? null,
+          createdAt: proof.createdAt != null ? Number(proof.createdAt) : null,
+          blockNumber: proof.blockNumber != null ? Number(proof.blockNumber) : null,
+        }
+      : null,
+    database: dbDoc
+      ? {
+          owner: dbDoc.owner ?? null,
+          createdAt: dbDoc.createdAt != null ? Number(dbDoc.createdAt) : null,
+          file: dbDoc.file ?? null,
+          ipfs: dbDoc.ipfs ?? null,
+          encryption: dbDoc.encryption ? { enabled: true } : null,
+        }
+      : null,
+  };
+}
+
+async function buildVerificationResponse(hash) {
+  const [existsOnChain, revoked, proof, dbDoc] = await Promise.all([
+    chain.documentExists(hash).catch(() => false),
+    chain.isDocumentRevoked(hash).catch(() => false),
+    chain.getRegistrationProof(hash).catch(() => null),
+    getDocument(hash).catch(() => null),
+  ]);
+
+  return {
+    hash,
+    existsOnChain,
+    verified: existsOnChain && !revoked,
+    revoked,
+    onChain: proof
+      ? {
+          owner: proof.owner ?? null,
+          createdAt: proof.createdAt != null ? Number(proof.createdAt) : null,
+          blockNumber: proof.blockNumber != null ? Number(proof.blockNumber) : null,
+        }
+      : null,
+    database: dbDoc
+      ? {
+          owner: dbDoc.owner ?? null,
+          createdAt: dbDoc.createdAt != null ? Number(dbDoc.createdAt) : null,
+          file: dbDoc.file ?? null,
+          ipfs: dbDoc.ipfs ?? null,
+          encryption: dbDoc.encryption ? { enabled: true } : null,
+        }
+      : null,
+  };
+}
+
 /**
  * Serve static files from backend/public directory
  * This provides a simple web UI for testing the API
@@ -322,8 +379,15 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Missing file (field name: file)" });
     }
     const hash = hashFileKeccak256(req.file.buffer);
-    const verified = await chain.verifyDocumentHash(hash);
-    return res.json({ hash, verified });
+    const result = await buildVerificationResponse(hash);
+    return res.json({
+      ...result,
+      source: {
+        filename: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+      },
+    });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/verify error:", err);
@@ -351,8 +415,8 @@ app.post("/api/verify-hash", async (req, res) => {
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
     }
-    const verified = await chain.verifyDocumentHash(hash);
-    return res.json({ hash, verified });
+    const result = await buildVerificationResponse(hash);
+    return res.json(result);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/verify-hash error:", err);

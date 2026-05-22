@@ -25,7 +25,22 @@ export type RegisterResponse = {
 
 export type VerifyResponse = {
   hash: string
+  existsOnChain: boolean
   verified: boolean
+  revoked: boolean
+  onChain: {
+    owner: string | null
+    createdAt: number | null
+    blockNumber: number | null
+  } | null
+  database: {
+    owner: string | null
+    createdAt: number | null
+    file: { name: string; mimetype: string; size: number } | null
+    ipfs: { cid: string | null; provider: string | null } | null
+    encryption: { enabled: boolean } | null
+  } | null
+  source?: { filename: string; mimetype: string; size: number }
 }
 
 async function parseJsonSafely(res: Response) {
@@ -43,6 +58,14 @@ function extractErrorMessage(data: unknown): string | null {
   return typeof err === 'string' ? err : null
 }
 
+function resolveUrl(url: string) {
+  const base = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
+  if (!base) return url
+  const trimmed = base.replace(/\/+$/, '')
+  if (url.startsWith('/')) return `${trimmed}${url}`
+  return `${trimmed}/${url}`
+}
+
 export async function postFile<T>(
   url: string,
   file: File,
@@ -54,7 +77,8 @@ export async function postFile<T>(
   if (options?.encrypt != null) formData.append('encrypt', options.encrypt ? 'true' : 'false')
   if (options?.passphrase != null) formData.append('passphrase', options.passphrase)
 
-  const res = await fetch(url, {
+  const resolved = resolveUrl(url)
+  const res = await fetch(resolved, {
     method: 'POST',
     body: formData,
     headers: options?.headers,

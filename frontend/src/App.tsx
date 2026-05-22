@@ -1,12 +1,20 @@
 import './App.css'
 import { useEffect, useMemo, useState } from 'react'
-import type { RegisterResponse } from './api'
+import type { RegisterResponse, VerifyResponse } from './api'
 import { postFile } from './api'
 import { ethers } from 'ethers'
 
 function withHttps(url: string) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url
   return `https://${url}`
+}
+
+function apiUrl(path: string) {
+  const base = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
+  if (!base) return path
+  const trimmed = base.replace(/\/+$/, '')
+  if (path.startsWith('/')) return `${trimmed}${path}`
+  return `${trimmed}/${path}`
 }
 
 function shortHash(value: string, keep = 10) {
@@ -17,6 +25,11 @@ function shortHash(value: string, keep = 10) {
 
 function shortAddr(addr: string) {
   return shortHash(addr, 6)
+}
+
+function formatDateTime(value: number | null | undefined) {
+  if (value == null) return 'unknown'
+  return new Date(value * 1000).toLocaleString()
 }
 
 function hashesMatch(left: string, right: string) {
@@ -240,7 +253,7 @@ function App() {
     let cancelled = false
     async function loadHealth() {
       try {
-        const res = await fetch('/api/health')
+        const res = await fetch(apiUrl('/api/health'))
         const data = await res.json()
         if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`)
         if (cancelled) return
@@ -936,7 +949,7 @@ function App() {
 
   const [verifyFile, setVerifyFile] = useState<File | null>(null)
   const [verifying, setVerifying] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<{ hash: string; verified: boolean } | null>(null)
+  const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null)
 
   async function computeKeccak(file: File) {
     const ab = await file.arrayBuffer()
@@ -950,15 +963,15 @@ function App() {
     try {
       setVerifying(true)
       const hash = await computeKeccak(verifyFile)
-      const res = await fetch('/api/verify-hash', {
+      const res = await fetch(apiUrl('/api/verify-hash'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-wallet-address': walletAddress ?? '' },
         body: JSON.stringify({ hash }),
       })
       const data = await res.json()
-      setVerifyResult({ hash: String(data.hash), verified: Boolean(data.verified) })
+      setVerifyResult(data as VerifyResponse)
     } catch (err) {
-      setVerifyResult({ hash: 'error', verified: false })
+      setVerifyResult(null)
     } finally {
       setVerifying(false)
     }
@@ -996,7 +1009,7 @@ function App() {
                 Connect Wallet
               </button>
             )}
-            <a className="navCta" href="/api/health" target="_blank" rel="noreferrer">
+            <a className="navCta" href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
               API Health
             </a>
           </div>
@@ -1143,7 +1156,7 @@ function App() {
         <section id="verify" className="section">
           <div className="sectionHead">
             <h2>Verify Document (simple)</h2>
-            <p className="muted">Choose a file and click Verify. Shows computed hash and on-chain match.</p>
+            <p className="muted">Choose a file and click Verify. The app computes the hash first, then checks the blockchain and shows any stored document details.</p>
           </div>
 
           <div className="panel">
@@ -1157,11 +1170,19 @@ function App() {
             {verifyResult && (
               <div className="resultBox">
                 <div className={`status ${verifyResult.verified ? 'ok' : 'bad'}`}>
-                  {verifyResult.verified ? 'Verified on-chain' : 'Not found on-chain'}
+                  {verifyResult.verified ? 'Verified on-chain' : verifyResult.existsOnChain ? 'Found but revoked' : 'Not found on-chain'}
                 </div>
                 <div className="kvGrid">
                   <div className="kvItem"><div className="k">Hash</div><div className="v mono">{verifyResult.hash}</div></div>
-                  <div className="kvItem"><div className="k">Matched</div><div className="v">{String(verifyResult.verified)}</div></div>
+                  <div className="kvItem"><div className="k">Exists on chain</div><div className="v">{String(verifyResult.existsOnChain)}</div></div>
+                  <div className="kvItem"><div className="k">Verified</div><div className="v">{String(verifyResult.verified)}</div></div>
+                  <div className="kvItem"><div className="k">Revoked</div><div className="v">{String(verifyResult.revoked)}</div></div>
+                  <div className="kvItem"><div className="k">Owner</div><div className="v mono">{verifyResult.onChain?.owner ?? verifyResult.database?.owner ?? 'unknown'}</div></div>
+                  <div className="kvItem"><div className="k">Created</div><div className="v">{formatDateTime(verifyResult.onChain?.createdAt ?? verifyResult.database?.createdAt)}</div></div>
+                  <div className="kvItem"><div className="k">Block</div><div className="v">{verifyResult.onChain?.blockNumber ?? 'unknown'}</div></div>
+                  <div className="kvItem"><div className="k">DB record</div><div className="v">{verifyResult.database ? 'found' : 'missing'}</div></div>
+                  <div className="kvItem"><div className="k">Filename</div><div className="v">{verifyResult.database?.file?.name ?? verifyResult.source?.filename ?? 'unknown'}</div></div>
+                  <div className="kvItem"><div className="k">Mimetype</div><div className="v">{verifyResult.database?.file?.mimetype ?? verifyResult.source?.mimetype ?? 'unknown'}</div></div>
                 </div>
               </div>
             )}
@@ -1560,7 +1581,7 @@ function App() {
             <a href="#upload">Upload</a>
             <a href="#mydocs">My Docs</a>
             <a href="#sharedDocs">Shared Docs</a>
-            <a href="/api/health" target="_blank" rel="noreferrer">
+            <a href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
               API Health
             </a>
           </div>
