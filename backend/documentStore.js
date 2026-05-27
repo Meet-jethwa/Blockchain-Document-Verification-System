@@ -14,6 +14,7 @@ if (!mongoUri) {
 let mongoClient = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2500 });
 let mongoDb = null;
 let mongoConnectPromise = null;
+let mongoConnectError = null;
 async function ensureMongo() {
   if (!mongoClient) return null;
   if (mongoDb) return mongoDb;
@@ -28,6 +29,7 @@ async function ensureMongo() {
         mongoClient = null;
         mongoConnectPromise = null;
         mongoDb = null;
+        mongoConnectError = err;
         // eslint-disable-next-line no-console
         console.error(
           `[documentStore] MongoDB connection failed: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -41,7 +43,14 @@ async function ensureMongo() {
 
 async function getCollection() {
   const db = await ensureMongo();
-  if (!db) throw new Error('MongoDB not available');
+  if (!db) {
+    if (mongoConnectError) {
+      throw new Error(
+        `MongoDB not available: ${mongoConnectError instanceof Error ? mongoConnectError.message : String(mongoConnectError)}`,
+      );
+    }
+    throw new Error('MongoDB not available: MONGODB_URI is missing or empty');
+  }
   return db.collection("documents");
 }
 
