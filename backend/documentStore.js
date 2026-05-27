@@ -111,3 +111,20 @@ export async function getDocument(hash) {
   const store = await loadJsonStore();
   return store.documents[hash] ?? null;
 }
+
+export async function listDocuments() {
+  const collection = await getCollection();
+  if (collection) {
+    const docs = await collection.find({}).toArray();
+    return docs.map((doc) => {
+      const { _id, ...rest } = doc;
+      return { hash: _id, ...rest };
+    });
+  }
+
+  const store = await loadJsonStore();
+  return Object.entries(store.documents).map(([hash, doc]) => ({
+    hash,
+    ...doc,
+  }));
+}

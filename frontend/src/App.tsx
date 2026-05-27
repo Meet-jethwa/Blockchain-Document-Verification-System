@@ -1,1507 +1,1422 @@
 import './App.css'
-import { useEffect, useMemo, useState } from 'react'
-import type { RegisterResponse } from './api'
-import { postFile } from './api'
+import profilePhoto from './photo.jpeg'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
+import { fetchDocuments, fetchProfile, postFileWithProgress, saveProfile, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
 
-function withHttps(url: string) {
-  if (url.startsWith('http://') || url.startsWith('https://')) return url
-  return `https://${url}`
+type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
+type ThemeMode = 'dark' | 'light'
+type ToastTone = 'info' | 'success' | 'warning' | 'error'
+
+type Toast = {
+  id: number
+  title: string
+  detail?: string
+  tone: ToastTone
 }
 
-function apiUrl(path: string) {
-  const base = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
-  if (!base) return path
-  const trimmed = base.replace(/\/+$/, '')
-  if (path.startsWith('/')) return `${trimmed}${path}`
-  return `${trimmed}/${path}`
+type LedgerDocument = {
+  hash: string
+  name: string
+  owner: string | null
+  createdAt: number | null
+  verified: boolean
+  status: 'Registered' | 'Revoked'
+  cid: string | null
 }
 
-function shortHash(value: string, keep = 10) {
-  if (!value) return ''
-  if (value.length <= keep * 2 + 3) return value
-  return `${value.slice(0, keep)}…${value.slice(-keep)}`
+type VerifyPreview = {
+  hash: string
+  verified: boolean
+  revoked: boolean
+  existsOnChain: boolean
+  note: string
 }
 
-function shortAddr(addr: string) {
-  return shortHash(addr, 6)
-}
+type ProfileState = UserProfile
 
-function hashesMatch(left: string, right: string) {
-  return left.trim().toLowerCase() === right.trim().toLowerCase()
-}
+const THEME_STORAGE_KEY = 'bdvs-theme'
 
 const DOCUMENT_REGISTRY_ABI = [
   'function registerDocument(bytes32 hash, string cid) external',
-  'function addDocumentVersion(bytes32 rootHash, bytes32 hash, string cid) external',
-  'function verifyDocument(bytes32 hash) external view returns (bool)',
-  'function verifyMyDocument(bytes32 hash) external view returns (bool)',
   'function revokeDocument(bytes32 hash) external',
-  'function revokeDocumentRoot(bytes32 rootHash) external',
-  'function isDocumentRevoked(bytes32 hash) external view returns (bool)',
-  'function getDocumentVersion(bytes32 hash) external view returns (bytes32 rootHash, uint256 version)',
-  'function getDocumentVersions(bytes32 rootHash) external view returns (bytes32[] memory)',
-
-  // Events used to discover shared documents (no extra on-chain storage needed)
-  'event ViewerAccessGranted(bytes32 indexed hash, address indexed owner, address indexed viewer)',
-  'event ViewerAccessRevoked(bytes32 indexed hash, address indexed owner, address indexed viewer)',
-  'event RootViewerAccessGranted(bytes32 indexed rootHash, address indexed owner, address indexed viewer)',
-  'event RootViewerAccessRevoked(bytes32 indexed rootHash, address indexed owner, address indexed viewer)',
-
-  // Viewer access (root-level)
-  'function grantRootViewer(bytes32 rootHash, address viewer) external',
-  'function revokeRootViewer(bytes32 rootHash, address viewer) external',
-
-  // Viewer access (single-hash)
   'function grantViewer(bytes32 hash, address viewer) external',
-  'function revokeViewer(bytes32 hash, address viewer) external',
-  'function canViewDocument(bytes32 hash, address user) external view returns (bool)',
-  'function getDocumentMeta(bytes32 hash) external view returns (address owner, uint256 createdAt)',
   'function getMyDocuments() external view returns (bytes32[] memory)',
+  'function getDocumentMeta(bytes32 hash) external view returns (address owner, uint256 createdAt)',
+  'function verifyDocument(bytes32 hash) external view returns (bool)',
 ]
 
-function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(u8.byteLength)
-  copy.set(u8)
-  return copy.buffer
+type ShareDialogState = {
+  open: boolean
+  doc: LedgerDocument | null
+  viewer: string
+  busy: boolean
 }
 
-function extractFilename(contentDisposition: string | null): string | null {
-  if (!contentDisposition) return null
-  const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(contentDisposition)
-  const raw = (m?.[1] || m?.[2])?.trim()
-  if (!raw) return null
-  try {
-    return decodeURIComponent(raw)
-  } catch {
-    return raw
-  }
-}
 
-async function downloadDecryptedFromBackend(hash: string, walletAddress: string) {
-  const result = await fetchDecryptedDocumentFromBackend(hash, walletAddress)
-
-  downloadBytes(result.bytes, result.filename, result.mimetype)
-
+function createFallbackProfile(address: string | null, preferredTheme: ThemeMode = 'dark'): ProfileState {
   return {
-    hash,
-    filename: result.filename,
-    meta: {
-      owner: result.meta.owner,
-      recordedAt: result.meta.recordedAt,
-      blockNumber: result.meta.blockNumber,
-      contract: result.meta.contract,
-    },
+    address: address ?? '',
+    name: 'My Profile',
+    title: 'Document owner',
+    email: '',
+    bio: '',
+    photoDataUrl: null,
+    preferredTheme,
+    updatedAt: null,
   }
 }
 
-async function fetchDecryptedDocumentFromBackend(hash: string, walletAddress: string) {
-  const res = await fetch(`/api/documents/${hash}/download`, {
+function readTheme(): ThemeMode {
+  if (typeof window === 'undefined') return 'dark'
+  const value = window.localStorage.getItem(THEME_STORAGE_KEY)
+  return value === 'light' ? 'light' : 'dark'
+}
+
+function shortAddr(addr: string | null | undefined) {
+  if (!addr) return '—'
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function shortHash(hash: string | null | undefined) {
+  if (!hash) return '—'
+  return `${hash.slice(0, 10)}…${hash.slice(-6)}`
+}
+
+function formatUnixSeconds(seconds: number | null) {
+  if (!seconds || Number.isNaN(seconds)) return 'Unknown'
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(seconds * 1000))
+}
+
+function networkLabel(chainId: number | null) {
+  if (chainId == null) return 'Disconnected'
+  const labels: Record<number, string> = {
+    1: 'Ethereum',
+    11155111: 'Sepolia',
+    31337: 'Hardhat',
+    8453: 'Base',
+    42161: 'Arbitrum',
+  }
+  return labels[chainId] ?? `Chain ${chainId}`
+}
+
+function toastToneLabel(tone: ToastTone) {
+  switch (tone) {
+    case 'success':
+      return 'Success'
+    case 'warning':
+      return 'Warning'
+    case 'error':
+      return 'Error'
+    default:
+      return 'Info'
+  }
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const input = document.createElement('textarea')
+  input.value = value
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  input.select()
+  document.execCommand('copy')
+  input.remove()
+}
+
+function downloadBytes(bytes: Uint8Array, filename: string, mimetype: string) {
+  const blob = new Blob([bytes as unknown as BlobPart], {
+    type: mimetype || 'application/octet-stream',
+  })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
+async function extractHash(file: File) {
+  const buffer = await file.arrayBuffer()
+  return ethers.keccak256(new Uint8Array(buffer))
+}
+
+async function fetchBackendHealth() {
+  const response = await fetch('/api/health')
+  if (!response.ok) {
+    throw new Error(`Health check failed (${response.status})`)
+  }
+  return response.json() as Promise<{ contractAddress?: string; chainId?: number; ipfsGatewayBaseUrl?: string }>
+}
+
+async function fetchDocumentDownload(hash: string, walletAddress: string) {
+  const response = await fetch(`/api/documents/${hash}/download`, {
     method: 'GET',
     headers: {
       'x-wallet-address': walletAddress,
     },
   })
-  if (!res.ok) {
-    try {
-      const data = (await res.json()) as { error?: string }
-      if (res.status === 412) {
-        throw new Error(
-          'Document integrity check failed — the downloaded file does not match the blockchain record. Download aborted.'
-        )
-      }
-      if (data?.error) throw new Error(String(data.error))
-    } catch (e) {
-      if (e instanceof Error) throw e
-      throw new Error(`Download failed (${res.status})`)
-    }
+  if (!response.ok) {
+    const message = await response.text().catch(() => '')
+    throw new Error(message || `Download failed (${response.status})`)
   }
-
-  const bytes = new Uint8Array(await res.arrayBuffer())
-  const filename = extractFilename(res.headers.get('content-disposition')) || 'document'
-  const mimetype = res.headers.get('content-type') || 'application/octet-stream'
-
-  const owner = res.headers.get('x-document-owner')
-  const recordedAt = res.headers.get('x-document-recorded-at')
-  const blockNumber = res.headers.get('x-document-block-number')
-  const contract = res.headers.get('x-document-contract')
-
-  return {
-    bytes,
-    filename,
-    mimetype,
-    meta: {
-      owner: owner ?? null,
-      recordedAt: recordedAt ? Number(recordedAt) : null,
-      blockNumber: blockNumber ? Number(blockNumber) : null,
-      contract: contract ?? null,
-    },
-  }
-}
-
-function openBytesInNewTab(bytes: Uint8Array, mimetype: string) {
-  const blob = new Blob([toArrayBuffer(bytes)], { type: mimetype || 'application/octet-stream' })
-  const blobUrl = URL.createObjectURL(blob)
-  const previewWindow = window.open('', '_blank')
-
-  if (!previewWindow) {
-    URL.revokeObjectURL(blobUrl)
-    throw new Error('Popup blocked. Allow popups to preview the document.')
-  }
-
-  previewWindow.location.href = blobUrl
-  previewWindow.focus()
-
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
-}
-
-function downloadBytes(bytes: Uint8Array, filename: string, mimetype: string) {
-  const blob = new Blob([toArrayBuffer(bytes)], { type: mimetype || 'application/octet-stream' })
-  const blobUrl = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = blobUrl
-  a.download = filename || 'download'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 2000)
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  const contentDisposition = response.headers.get('content-disposition') || ''
+  const match = /filename="?([^";]+)"?/i.exec(contentDisposition)
+  const filename = match?.[1] || 'document'
+  const mimetype = response.headers.get('content-type') || 'application/octet-stream'
+  return { bytes, filename, mimetype }
 }
 
 function App() {
-  const hiddenMyDocsStorageKey = 'docuchain:hiddenMyDocHashes'
-  const [registerFile, setRegisterFile] = useState<File | null>(null)
-
-  const [registerLoading, setRegisterLoading] = useState(false)
-
-  const [registerError, setRegisterError] = useState<string | null>(null)
-
-  const [registerResult, setRegisterResult] = useState<RegisterResponse | null>(null)
-
+  const [theme, setTheme] = useState<ThemeMode>(readTheme)
+  const [activePage, setActivePage] = useState<PageId>('home')
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
-  const [walletChainId, setWalletChainId] = useState<number | null>(null)
-  const [walletError, setWalletError] = useState<string | null>(null)
-
+  const [chainId, setChainId] = useState<number | null>(null)
+  const [balance, setBalance] = useState<string | null>(null)
   const [contractAddress, setContractAddress] = useState<string | null>(null)
   const [backendChainId, setBackendChainId] = useState<number | null>(null)
-  const [, setIpfsGatewayBaseUrl] = useState<string>('https://ipfs.io/ipfs/')
-
-  const [myDocs, setMyDocs] = useState<
-    Array<{ hash: string; rootHash: string; version: number; cid: string | null; createdAt: number; url: string | null; revoked: boolean }>
-  >([])
-  const [myDocsLoading, setMyDocsLoading] = useState(false)
-  const [myDocsError, setMyDocsError] = useState<string | null>(null)
-  const [myDownloadLoadingByHash, setMyDownloadLoadingByHash] = useState<Record<string, boolean>>({})
-  const [myDownloadStatusByHash, setMyDownloadStatusByHash] = useState<Record<string, string | null>>({})
-  const [myViewLoadingByHash, setMyViewLoadingByHash] = useState<Record<string, boolean>>({})
-  const [myViewStatusByHash, setMyViewStatusByHash] = useState<Record<string, string | null>>({})
-
-  const [shareAddressByHash, setShareAddressByHash] = useState<Record<string, string>>({})
-  const [shareStatusByHash, setShareStatusByHash] = useState<Record<string, string | null>>({})
-  const [shareLoadingByHash, setShareLoadingByHash] = useState<Record<string, boolean>>({})
-
-  const [sharedHashes, setSharedHashes] = useState<string[]>([])
-  const [sharedDocs, setSharedDocs] = useState<
-    Array<{
-      hash: string
-      owner: string | null
-      rootHash: string | null
-      version: number | null
-      cid: string | null
-      createdAt: number | null
-      url: string | null
-      access: boolean
-      revoked: boolean
-      status: string | null
-    }>
-  >([])
-  const [sharedDocsLoading, setSharedDocsLoading] = useState(false)
-  const [sharedDocsError, setSharedDocsError] = useState<string | null>(null)
-  const [sharedDownloadLoadingByHash, setSharedDownloadLoadingByHash] = useState<Record<string, boolean>>({})
-  const [sharedDownloadStatusByHash, setSharedDownloadStatusByHash] = useState<Record<string, string | null>>({})
-  const [sharedDownloadProofByHash, setSharedDownloadProofByHash] = useState<Record<string, { owner: string; recordedAt: string; blockNumber: string; hash: string; verified: boolean } | null>>({})
-  const [sharedViewLoadingByHash, setSharedViewLoadingByHash] = useState<Record<string, boolean>>({})
-  const [sharedViewStatusByHash, setSharedViewStatusByHash] = useState<Record<string, string | null>>({})
-
-  const [revokeLoadingByHash, setRevokeLoadingByHash] = useState<Record<string, boolean>>({})
-  const [revokeStatusByHash, setRevokeStatusByHash] = useState<Record<string, string | null>>({})
-  const [revokeRootLoadingByRoot, setRevokeRootLoadingByRoot] = useState<Record<string, boolean>>({})
-  const [revokeRootStatusByRoot, setRevokeRootStatusByRoot] = useState<Record<string, string | null>>({})
-
-  const [newVersionFileByRoot, setNewVersionFileByRoot] = useState<Record<string, File | null>>({})
-  const [newVersionLoadingByRoot, setNewVersionLoadingByRoot] = useState<Record<string, boolean>>({})
-  const [newVersionStatusByRoot, setNewVersionStatusByRoot] = useState<Record<string, string | null>>({})
-
-  const [versionsByRootHash, setVersionsByRootHash] = useState<Record<string, string[] | null>>({})
-  const [versionsLoadingByRoot, setVersionsLoadingByRoot] = useState<Record<string, boolean>>({})
-  const [versionsErrorByRoot, setVersionsErrorByRoot] = useState<Record<string, string | null>>({})
-  const [hiddenMyDocHashes, setHiddenMyDocHashes] = useState<string[]>(() => {
-    try {
-      const raw = window.localStorage.getItem(hiddenMyDocsStorageKey)
-      if (!raw) return []
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : []
-    } catch {
-      return []
-    }
+  const [walletBusy, setWalletBusy] = useState(false)
+  const [dashboardDocs, setDashboardDocs] = useState<LedgerDocument[]>([])
+  const [dashboardLoading, setDashboardLoading] = useState(false)
+  const [dashboardFilter, setDashboardFilter] = useState('')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadHash, setUploadHash] = useState('')
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const [uploadStage, setUploadStage] = useState(0)
+  const [uploadMessage, setUploadMessage] = useState('')
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
+  const [sharedDocs, setSharedDocs] = useState<DocumentSummary[]>([])
+  const [verifyPreview, setVerifyPreview] = useState<VerifyPreview | null>(null)
+  const [verifyBusy, setVerifyBusy] = useState(false)
+  const [profile, setProfile] = useState<ProfileState | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [shareDialog, setShareDialog] = useState<ShareDialogState>({
+    open: false,
+    doc: null,
+    viewer: '',
+    busy: false,
   })
-
-  const canRegister = useMemo(
-    () => !!registerFile && !registerLoading,
-    [registerFile, registerLoading],
-  )
-
-  const walletConnected = !!walletAddress
-  const chainMismatch =
-    walletChainId != null && backendChainId != null ? walletChainId !== backendChainId : false
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const verifyInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme
     try {
-      window.localStorage.setItem(hiddenMyDocsStorageKey, JSON.stringify(hiddenMyDocHashes))
-    } catch {
-      // Non-fatal for private/incognito modes.
-    }
-  }, [hiddenMyDocHashes])
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    } catch {}
+  }, [theme])
 
   useEffect(() => {
     let cancelled = false
-    async function loadHealth() {
+    void (async () => {
       try {
-        const res = await fetch(apiUrl('/api/health'))
-        const data = await res.json()
-        if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`)
+        const health = await fetchBackendHealth()
         if (cancelled) return
-        setContractAddress(String(data.contractAddress))
-        setBackendChainId(typeof data.chainId === 'number' ? data.chainId : Number(data.chainId))
-        if (data.ipfsGatewayBaseUrl) setIpfsGatewayBaseUrl(String(data.ipfsGatewayBaseUrl))
+        if (health.contractAddress) setContractAddress(health.contractAddress)
+        if (typeof health.chainId === 'number') setBackendChainId(health.chainId)
       } catch {
-        // Non-fatal; UI can still render.
+        if (!cancelled) {
+          setContractAddress(null)
+        }
       }
-    }
-    loadHealth()
+    })()
     return () => {
       cancelled = true
     }
   }, [])
 
-  async function promptWalletAccountSelection() {
-    setWalletError(null)
-    const eth = window.ethereum
-    if (!eth) {
-      setWalletError('No wallet detected. Install MetaMask (or another EVM wallet).')
+  useEffect(() => {
+    void syncWalletContext()
+    const ethereum = window.ethereum
+    if (!ethereum) return undefined
+
+    const handleAccounts = (accounts: string[]) => {
+      if (!accounts?.[0]) {
+        setWalletAddress(null)
+        setChainId(null)
+        setBalance(null)
+        setActivePage('home')
+        setDashboardDocs([])
+        setSharedDocs([])
+        return
+      }
+      void syncWalletContext(accounts[0])
+      setActivePage('dashboard')
+    }
+
+    const handleChain = (hexChainId: string) => {
+      setChainId(Number(BigInt(hexChainId)))
+      void syncWalletContext()
+    }
+
+    ethereum.on?.('accountsChanged', handleAccounts)
+    ethereum.on?.('chainChanged', handleChain)
+
+    return () => {
+      ethereum.removeListener?.('accountsChanged', handleAccounts)
+      ethereum.removeListener?.('chainChanged', handleChain)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!walletAddress || activePage !== 'dashboard') {
+      return
+    }
+    void refreshDashboardDocs()
+  }, [walletAddress, contractAddress, activePage])
+
+  useEffect(() => {
+    if (!walletAddress) {
+      setProfile(null)
+      setProfileLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setProfileLoading(true)
+    void (async () => {
+      try {
+        const response = await fetchProfile(walletAddress)
+        if (cancelled) return
+        setProfile(response.profile)
+        setTheme(response.profile.preferredTheme)
+      } catch {
+        if (cancelled) return
+        setProfile(createFallbackProfile(walletAddress, theme))
+      } finally {
+        if (!cancelled) setProfileLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [walletAddress])
+
+  useEffect(() => {
+    if (!uploadFile) {
+      setUploadHash('')
+      setUploadMessage('')
+      return
+    }
+    let cancelled = false
+    setUploadMessage('Calculating keccak256 hash locally.')
+    void extractHash(uploadFile)
+      .then((hash) => {
+        if (cancelled) return
+        setUploadHash(hash)
+        setUploadMessage('Hash ready. Register on blockchain when you are ready.')
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setUploadHash('')
+        setUploadMessage(error instanceof Error ? error.message : String(error))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [uploadFile])
+
+  function pushToast(title: string, detail: string, tone: ToastTone = 'info') {
+    const id = Date.now() + Math.floor(Math.random() * 1000)
+    setToasts((current) => [...current, { id, title, detail, tone }])
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id))
+    }, 4000)
+  }
+
+  async function syncWalletContext(address?: string | null) {
+    const ethereum = window.ethereum
+    if (!ethereum) return
+    try {
+      const chainHex = (await ethereum.request({ method: 'eth_chainId' })) as string
+      setChainId(Number(BigInt(chainHex)))
+      const accounts = address ? [address] : ((await ethereum.request({ method: 'eth_accounts' })) as string[])
+      const nextAddress = address ?? accounts?.[0] ?? null
+      setWalletAddress(nextAddress)
+      if (nextAddress) {
+        const provider = new ethers.BrowserProvider(ethereum)
+        const weiBalance = await provider.getBalance(nextAddress)
+        setBalance(ethers.formatEther(weiBalance))
+      } else {
+        setBalance(null)
+      }
+    } catch {
+      if (!address) {
+        setBalance(null)
+      }
+    }
+  }
+
+  async function ensureContractAddress() {
+    if (contractAddress) return contractAddress
+    const health = await fetchBackendHealth()
+    if (!health.contractAddress) {
+      throw new Error('Backend contract address is not available')
+    }
+    setContractAddress(health.contractAddress)
+    return health.contractAddress
+  }
+
+  async function connectWallet() {
+    const ethereum = window.ethereum
+    if (!ethereum) {
+      pushToast('Wallet unavailable', 'Install MetaMask or another EVM wallet.', 'error')
+      return
+    }
+    setWalletBusy(true)
+    try {
+      const accounts = (await ethereum.request({ method: 'eth_requestAccounts' })) as string[]
+      await syncWalletContext()
+      setActivePage('dashboard')
+      pushToast('Wallet connected', shortAddr(accounts?.[0] ?? null), 'success')
+    } catch (error) {
+      pushToast('Wallet connection failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setWalletBusy(false)
+    }
+  }
+
+  function disconnectWallet() {
+    setWalletAddress(null)
+    setChainId(null)
+    setBalance(null)
+    setDashboardDocs([])
+    setSharedDocs([])
+    setProfile(null)
+    setActivePage('home')
+    pushToast('Wallet context cleared', 'The app is back in guest mode.', 'info')
+  }
+
+  async function saveProfileDraft() {
+    if (!walletAddress || !profile) {
+      pushToast('Profile unavailable', 'Connect a wallet before saving profile changes.', 'warning')
+      return
+    }
+
+    setProfileSaving(true)
+    try {
+      const response = await saveProfile(walletAddress, {
+        name: profile.name,
+        title: profile.title,
+        email: profile.email,
+        bio: profile.bio,
+        photoDataUrl: profile.photoDataUrl,
+        preferredTheme: profile.preferredTheme,
+      })
+      setProfile(response.profile)
+      setTheme(response.profile.preferredTheme)
+      pushToast('Profile saved', 'Your profile was stored in MongoDB.', 'success')
+    } catch (error) {
+      pushToast('Profile save failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setProfileSaving(false)
+    }
+  }
+
+  async function verifyFile(file: File) {
+    const ethereum = window.ethereum
+    if (!ethereum) {
+      pushToast('Verify failed', 'MetaMask or another EVM wallet is required for chain reads.', 'error')
+      return
+    }
+    setVerifyBusy(true)
+    try {
+      const hash = await extractHash(file)
+      const address = await ensureContractAddress()
+      const provider = new ethers.BrowserProvider(ethereum)
+      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, provider)
+      const verified = Boolean(await contract.verifyDocument(hash))
+      setVerifyPreview({
+        hash,
+        verified,
+        revoked: false,
+        existsOnChain: verified,
+        note: verified ? 'Verified on-chain' : 'No on-chain registration found',
+      })
+      pushToast(verified ? 'Document verified' : 'Document not found', shortHash(hash), verified ? 'success' : 'warning')
+    } catch (error) {
+      pushToast('Verify failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setVerifyBusy(false)
+    }
+  }
+
+  async function handleGlobalVerifyDrop(file: File) {
+    await verifyFile(file)
+  }
+
+  async function refreshDashboardDocs() {
+    if (!walletAddress) return
+    setDashboardLoading(true)
+    try {
+      const collections = await fetchDocuments(walletAddress)
+      setDashboardDocs(collections.owned)
+      setSharedDocs(collections.shared)
+    } catch (error) {
+      pushToast('Ledger load failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setDashboardLoading(false)
+    }
+  }
+
+  async function registerSelectedDocument() {
+    if (!uploadFile) {
+      pushToast('No file selected', 'Choose a file before registering it.', 'warning')
+      return
+    }
+    const ethereum = window.ethereum
+    if (!ethereum) {
+      pushToast('Wallet unavailable', 'MetaMask is required to register on-chain.', 'error')
+      return
+    }
+    setUploadBusy(true)
+    setUploadStage(1)
+    setUploadMessage('Encrypting and uploading through the backend.')
+    try {
+      if (!walletAddress) {
+        await ethereum.request({ method: 'eth_requestAccounts' })
+        await syncWalletContext()
+      }
+      const activeWallet = walletAddress ?? (((await ethereum.request({ method: 'eth_accounts' })) as string[])[0] ?? null)
+      if (!activeWallet) {
+        throw new Error('No connected wallet available')
+      }
+
+      setUploadProgress(0)
+      const uploadResponse = await postFileWithProgress<RegisterResponse>(
+        '/api/upload',
+        uploadFile,
+        { headers: { 'x-wallet-address': activeWallet } },
+        (percent) => setUploadProgress(percent),
+      )
+      setUploadProgress(null)
+
+      const hash = uploadResponse.hash
+      setUploadHash(hash)
+      setUploadStage(2)
+      setUploadMessage('Transaction ready. Confirm MetaMask to anchor the hash.')
+
+      if (uploadResponse.alreadyRegistered) {
+        setUploadStage(3)
+        setUploadMessage('The document is already registered on-chain.')
+        pushToast('Already registered', shortHash(hash), 'warning')
+        setActivePage('dashboard')
+        await refreshDashboardDocs()
+        return
+      }
+
+      const address = await ensureContractAddress()
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
+      const tx = await contract.registerDocument(hash, uploadResponse.ipfs.cid ?? '')
+      setUploadStage(3)
+      setUploadMessage('Transaction pending. Waiting for confirmation.')
+      pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')
+      await tx.wait()
+      setUploadMessage('Document anchored on-chain.')
+      pushToast('Registration confirmed', shortHash(hash), 'success')
+      setActivePage('dashboard')
+      await refreshDashboardDocs()
+    } catch (error) {
+      setUploadMessage(error instanceof Error ? error.message : String(error))
+      pushToast('Registration failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setUploadProgress(null)
+      setUploadBusy(false)
+    }
+  }
+
+  async function downloadDocument(hash: string, fallbackName: string) {
+    if (!walletAddress) {
+      pushToast('Download blocked', 'Connect your wallet first.', 'warning')
+      return
+    }
+    try {
+      const payload = await fetchDocumentDownload(hash, walletAddress)
+      downloadBytes(payload.bytes, payload.filename || fallbackName, payload.mimetype)
+      pushToast('Download started', shortHash(hash), 'success')
+    } catch (error) {
+      pushToast('Download failed', error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  function openShareDialog(doc: LedgerDocument) {
+    setShareDialog({
+      open: true,
+      doc,
+      viewer: '',
+      busy: false,
+    })
+  }
+
+  function closeShareDialog() {
+    if (shareDialog.busy) return
+    setShareDialog({ open: false, doc: null, viewer: '', busy: false })
+  }
+
+  async function submitShareDialog() {
+    if (!shareDialog.doc) return
+    if (!walletAddress) {
+      pushToast('Wallet required', 'Connect your wallet before sharing a document.', 'warning')
+      return
+    }
+    if (!ethers.isAddress(shareDialog.viewer)) {
+      pushToast('Invalid recipient', 'Enter a valid 0x wallet address.', 'error')
       return
     }
 
     try {
-      // Some wallets (e.g., MetaMask) support prompting the account picker via permissions.
-      // Fallback to eth_requestAccounts which will prompt if needed.
-      try {
-        await eth.request({
-          method: 'wallet_requestPermissions',
-          params: [{ eth_accounts: {} }],
-        })
-      } catch {
-        // Ignore if unsupported.
-      }
-
-      const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[]
-      const chainIdHex = (await eth.request({ method: 'eth_chainId' })) as string
-      setWalletAddress(accounts?.[0] ?? null)
-      setWalletChainId(Number(BigInt(chainIdHex)))
-    } catch (err) {
-      setWalletError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  function disconnectWalletUiOnly() {
-    // Wallet extensions don't support programmatic disconnect reliably.
-    // This clears app state so the user can reconnect/select another account.
-    setWalletError(null)
-    setWalletAddress(null)
-    setWalletChainId(null)
-  }
-
-  useEffect(() => {
-    const eth = window.ethereum
-    if (!eth) return
-
-    const onAccountsChanged = (accounts: string[]) => {
-      setWalletAddress(accounts?.[0] ?? null)
-    }
-    const onChainChanged = (chainIdHex: string) => {
-      try {
-        setWalletChainId(Number(BigInt(chainIdHex)))
-      } catch {
-        setWalletChainId(null)
-      }
-    }
-
-    eth.on?.('accountsChanged', onAccountsChanged)
-    eth.on?.('chainChanged', onChainChanged)
-    return () => {
-      eth.removeListener?.('accountsChanged', onAccountsChanged)
-      eth.removeListener?.('chainChanged', onChainChanged)
-    }
-  }, [])
-
-  async function connectWallet() {
-    await promptWalletAccountSelection()
-  }
-
-  async function getSignerAndContract() {
-    if (!contractAddress) throw new Error('Contract address not loaded. Is the backend running?')
-    const eth = window.ethereum
-    if (!eth) throw new Error('No wallet detected.')
-    const provider = new ethers.BrowserProvider(eth)
-    const signer = await provider.getSigner()
-    const contract = new ethers.Contract(contractAddress, DOCUMENT_REGISTRY_ABI, signer)
-    return { provider, signer, contract }
-  }
-
-  async function refreshMyDocuments() {
-    setMyDocsError(null)
-    setMyDocsLoading(true)
-    try {
-      const { contract } = await getSignerAndContract()
-      const hashes = (await contract.getMyDocuments()) as string[]
-      const docs = await Promise.all(
-        hashes.map(async (hash) => {
-          const [, createdAt] = (await contract.getDocumentMeta(hash)) as [string, bigint]
-          const [rootHash, versionBig] = (await contract.getDocumentVersion(hash)) as [string, bigint]
-          const revoked = (await contract.isDocumentRevoked(hash)) as boolean
-
-          return {
-            hash,
-            rootHash,
-            version: Number(versionBig),
-            cid: null,
-            createdAt: Number(createdAt),
-            url: null,
-            revoked,
-          }
-        }),
-      )
-      setMyDocs(docs.filter((d) => !hiddenMyDocHashes.includes(d.hash)).slice().reverse())
-    } catch (err) {
-      setMyDocsError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setMyDocsLoading(false)
-    }
-  }
-
-  function removeMyDocument(hash: string) {
-    setMyDocs((prev) => prev.filter((d) => d.hash !== hash))
-    setHiddenMyDocHashes((prev) => (prev.includes(hash) ? prev : [...prev, hash]))
-    setMyDownloadStatusByHash((prev) => {
-      const next = { ...prev }
-      delete next[hash]
-      return next
-    })
-    setMyViewStatusByHash((prev) => {
-      const next = { ...prev }
-      delete next[hash]
-      return next
-    })
-    setShareStatusByHash((prev) => {
-      const next = { ...prev }
-      delete next[hash]
-      return next
-    })
-  }
-
-  async function grantViewerAccess(hash: string, viewer: string) {
-    setShareStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setShareLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      const { contract } = await getSignerAndContract()
-      const normalized = ethers.getAddress(viewer)
-      const tx = await contract.grantViewer(hash, normalized)
+      setShareDialog((current) => ({ ...current, busy: true }))
+      const address = await ensureContractAddress()
+      const ethereum = window.ethereum
+      if (!ethereum) throw new Error('Wallet provider unavailable')
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
+      const tx = await contract.grantViewer(shareDialog.doc.hash, shareDialog.viewer)
+      pushToast('Share pending', `${shortAddr(shareDialog.viewer)} will receive access after confirmation.`, 'info')
       await tx.wait()
-      // Show only the recipient account when reporting success
-      setShareStatusByHash((prev) => ({ ...prev, [hash]: shortAddr(normalized) }))
-    } catch (err) {
-      setShareStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setShareLoadingByHash((prev) => ({ ...prev, [hash]: false }))
+      pushToast('Access granted', `${shareDialog.doc.name} shared with ${shortAddr(shareDialog.viewer)}.`, 'success')
+      setShareDialog({ open: false, doc: null, viewer: '', busy: false })
+    } catch (error) {
+      pushToast('Share failed', error instanceof Error ? error.message : String(error), 'error')
+      setShareDialog((current) => ({ ...current, busy: false }))
     }
   }
 
-  async function revokeViewerAccess(hash: string, viewer: string) {
-    setShareStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setShareLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      const { contract } = await getSignerAndContract()
-      const normalized = ethers.getAddress(viewer)
-      const tx = await contract.revokeViewer(hash, normalized)
-      await tx.wait()
-      // Show only the recipient account when reporting success
-      setShareStatusByHash((prev) => ({ ...prev, [hash]: shortAddr(normalized) }))
-    } catch (err) {
-      setShareStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setShareLoadingByHash((prev) => ({ ...prev, [hash]: false }))
+  async function revokeDocument(hash: string) {
+    if (!walletAddress) {
+      pushToast('Wallet required', 'Connect your wallet to revoke a document.', 'warning')
+      return
     }
-  }
-
-  async function refreshSharedDocuments(hashesOverride?: string[]) {
-    setSharedDocsError(null)
-    setSharedDocsLoading(true)
     try {
-      const hashesToLoad = hashesOverride ?? sharedHashes
-      if (hashesToLoad.length === 0) {
-        setSharedDocs([])
-        return
-      }
-
-      if (!walletConnected) {
-        await connectWallet()
-      }
-
-      const { contract, signer } = await getSignerAndContract()
-      const viewer = await signer.getAddress()
-
-      const docs = await Promise.all(
-        hashesToLoad.map(async (hash) => {
-          if (!hash.startsWith('0x') || hash.length !== 66) {
-            return {
-              hash,
-              owner: null,
-              rootHash: null,
-              version: null,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: false,
-              revoked: false,
-              status: 'Invalid hash format',
-            }
-          }
-
-          let access = false
-          try {
-            access = (await contract.canViewDocument(hash, viewer)) as boolean
-          } catch (err) {
-            return {
-              hash,
-              owner: null,
-              rootHash: null,
-              version: null,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: false,
-              revoked: false,
-              status: err instanceof Error ? err.message : String(err),
-            }
-          }
-
-          if (!access) {
-            return {
-              hash,
-              owner: null,
-              rootHash: null,
-              version: null,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: false,
-              revoked: false,
-              status: 'No viewer access (or revoked)',
-            }
-          }
-
-          let rootHash: string | null = null
-          let version: number | null = null
-          try {
-            const [rh, vb] = (await contract.getDocumentVersion(hash)) as [string, bigint]
-            rootHash = rh
-            version = Number(vb)
-          } catch {
-            // optional
-          }
-
-          const revoked = (await contract.isDocumentRevoked(hash)) as boolean
-          if (revoked) {
-            return {
-              hash,
-              owner: null,
-              rootHash,
-              version,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: true,
-              revoked: true,
-              status: 'Revoked',
-            }
-          }
-
-          try {
-            const [owner, createdAt] = (await contract.getDocumentMeta(hash)) as [string, bigint]
-            return {
-              hash,
-              owner,
-              rootHash,
-              version,
-              cid: null,
-              createdAt: Number(createdAt),
-              url: null,
-              access: true,
-              revoked: false,
-              status: 'Authorized. Use Download to retrieve the file.',
-            }
-          } catch (err) {
-            return {
-              hash,
-              owner: null,
-              rootHash,
-              version,
-              cid: null,
-              createdAt: null,
-              url: null,
-              access: true,
-              revoked: false,
-              status: err instanceof Error ? err.message : String(err),
-            }
-          }
-        }),
-      )
-
-      setSharedDocs(docs)
-    } catch (err) {
-      setSharedDocsError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSharedDocsLoading(false)
-    }
-  }
-
-  async function loadSharedDocumentsFromBlockchain() {
-    setSharedDocsError(null)
-    setSharedDocsLoading(true)
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-
-      const { contract, signer } = await getSignerAndContract()
-      const viewer = await signer.getAddress()
-
-      // Pull viewer access changes from logs and replay them to compute current grants.
-      // This avoids storing per-viewer arrays on-chain (better privacy + cheaper).
-      const [rootGranted, rootRevoked, hashGranted, hashRevoked] = await Promise.all([
-        contract.queryFilter(contract.filters.RootViewerAccessGranted(null, null, viewer), 0, 'latest'),
-        contract.queryFilter(contract.filters.RootViewerAccessRevoked(null, null, viewer), 0, 'latest'),
-        contract.queryFilter(contract.filters.ViewerAccessGranted(null, null, viewer), 0, 'latest'),
-        contract.queryFilter(contract.filters.ViewerAccessRevoked(null, null, viewer), 0, 'latest'),
-      ])
-
-      const timeline: Array<
-        | { kind: 'rootGrant' | 'rootRevoke'; blockNumber: number; logIndex: number; rootHash: string }
-        | { kind: 'hashGrant' | 'hashRevoke'; blockNumber: number; logIndex: number; hash: string }
-      > = []
-
-      for (const ev of rootGranted) {
-        if (!('args' in ev)) continue
-        timeline.push({
-          kind: 'rootGrant',
-          blockNumber: ev.blockNumber ?? 0,
-          logIndex: ev.index ?? 0,
-          rootHash: String(ev.args?.[0] ?? ''),
-        })
-      }
-      for (const ev of rootRevoked) {
-        if (!('args' in ev)) continue
-        timeline.push({
-          kind: 'rootRevoke',
-          blockNumber: ev.blockNumber ?? 0,
-          logIndex: ev.index ?? 0,
-          rootHash: String(ev.args?.[0] ?? ''),
-        })
-      }
-      for (const ev of hashGranted) {
-        if (!('args' in ev)) continue
-        timeline.push({
-          kind: 'hashGrant',
-          blockNumber: ev.blockNumber ?? 0,
-          logIndex: ev.index ?? 0,
-          hash: String(ev.args?.[0] ?? ''),
-        })
-      }
-      for (const ev of hashRevoked) {
-        if (!('args' in ev)) continue
-        timeline.push({
-          kind: 'hashRevoke',
-          blockNumber: ev.blockNumber ?? 0,
-          logIndex: ev.index ?? 0,
-          hash: String(ev.args?.[0] ?? ''),
-        })
-      }
-
-      timeline.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex))
-
-      const grantedRoots = new Map<string, boolean>()
-      const grantedHashes = new Map<string, boolean>()
-      for (const item of timeline) {
-        if (item.kind === 'rootGrant') grantedRoots.set(item.rootHash, true)
-        if (item.kind === 'rootRevoke') grantedRoots.set(item.rootHash, false)
-        if (item.kind === 'hashGrant') grantedHashes.set(item.hash, true)
-        if (item.kind === 'hashRevoke') grantedHashes.set(item.hash, false)
-      }
-
-      const activeRoots = Array.from(grantedRoots.entries())
-        .filter(([, isGranted]) => isGranted)
-        .map(([root]) => root)
-        .filter((x) => typeof x === 'string' && x.startsWith('0x') && x.length === 66)
-
-      const activeHashes = Array.from(grantedHashes.entries())
-        .filter(([, isGranted]) => isGranted)
-        .map(([hash]) => hash)
-        .filter((x) => typeof x === 'string' && x.startsWith('0x') && x.length === 66)
-
-      // Expand roots into version hashes, then merge with single-hash grants.
-      const hashesFromRoots = (
-        await Promise.all(
-          activeRoots.map(async (rootHash) => {
-            try {
-              const versions = (await contract.getDocumentVersions(rootHash)) as string[]
-              return versions.map(String)
-            } catch {
-              return [] as string[]
-            }
-          }),
-        )
-      ).flat()
-
-      const allHashes = Array.from(new Set([...hashesFromRoots, ...activeHashes]))
-
-      // Cache in-state (not persisted) so Remove works and refresh can re-use.
-      setSharedHashes(allHashes)
-
-      await refreshSharedDocuments(allHashes)
-
-      // If nothing found, show a clear message.
-      if (allHashes.length === 0) {
-        setSharedDocsError('No shared documents found for your wallet.')
-      }
-    } catch (err) {
-      setSharedDocsError(err instanceof Error ? err.message : String(err))
-      setSharedDocs([])
-    } finally {
-      setSharedDocsLoading(false)
-    }
-  }
-
-  function removeSharedHash(hash: string) {
-    setSharedHashes((prev) => prev.filter((h) => h !== hash))
-    setSharedDocs((prev) => prev.filter((d) => d.hash !== hash))
-    setSharedDownloadStatusByHash((prev) => {
-      const next = { ...prev }
-      delete next[hash]
-      return next
-    })
-  }
-
-  async function downloadMyHash(hash: string) {
-    setMyDownloadStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setMyDownloadLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      if (!walletAddress) throw new Error('Connect wallet first.')
-      await downloadDecryptedFromBackend(hash, walletAddress)
-    } catch (err) {
-      setMyDownloadStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setMyDownloadLoadingByHash((prev) => ({ ...prev, [hash]: false }))
-    }
-  }
-
-  async function viewMyHash(hash: string) {
-    setMyViewStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setMyViewLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-
-    try {
-      if (!walletAddress) throw new Error('Connect a wallet first.')
-
-      const result = await fetchDecryptedDocumentFromBackend(hash, walletAddress)
-      openBytesInNewTab(result.bytes, result.mimetype)
-    } catch (err) {
-      setMyViewStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setMyViewLoadingByHash((prev) => ({ ...prev, [hash]: false }))
-    }
-  }
-
-  async function downloadOrDecryptSharedHash(hash: string) {
-    setSharedDownloadStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setSharedDownloadProofByHash((prev) => ({ ...prev, [hash]: null }))
-    setSharedDownloadLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      if (!walletAddress) throw new Error('Connect wallet first.')
-      const result = await downloadDecryptedFromBackend(hash, walletAddress)
-      const owner = result.meta.owner ?? 'unknown'
-      const recordedAt = result.meta.recordedAt ? new Date(result.meta.recordedAt * 1000) : null
-      const recordedAtStr = recordedAt ? recordedAt.toLocaleString() : 'unknown date'
-      const blockNumberStr = result.meta.blockNumber != null ? String(result.meta.blockNumber) : 'unknown'
-      setSharedDownloadStatusByHash((prev) => ({
-        ...prev,
-        [hash]: 'Downloaded document is verified',
-      }))
-      setSharedDownloadProofByHash((prev) => ({
-        ...prev,
-        [hash]: {
-          owner,
-          recordedAt: recordedAtStr,
-          blockNumber: blockNumberStr,
-          hash: result.hash,
-          verified: hashesMatch(result.hash, hash),
-        },
-      }))
-    } catch (err) {
-      setSharedDownloadStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-      setSharedDownloadProofByHash((prev) => ({
-        ...prev,
-        [hash]: {
-          owner: 'unknown',
-          recordedAt: 'unknown date',
-          blockNumber: 'unknown',
-          hash,
-          verified: false,
-        },
-      }))
-    } finally {
-      setSharedDownloadLoadingByHash((prev) => ({ ...prev, [hash]: false }))
-    }
-  }
-
-  async function viewSharedHash(hash: string) {
-    setSharedViewStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setSharedViewLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-
-    try {
-      if (!walletAddress) throw new Error('Connect a wallet first.')
-
-      const result = await fetchDecryptedDocumentFromBackend(hash, walletAddress)
-      openBytesInNewTab(result.bytes, result.mimetype)
-
-      const recordedAtStr = result.meta.recordedAt ? new Date(result.meta.recordedAt * 1000).toLocaleString() : 'unknown time'
-      setSharedViewStatusByHash((prev) => ({
-        ...prev,
-        [hash]: `Preview opened in a new tab — registered on-chain by ${result.meta.owner ?? 'unknown'} on ${recordedAtStr} (contract ${result.meta.contract ?? 'unknown'}).`,
-      }))
-    } catch (err) {
-      setSharedViewStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setSharedViewLoadingByHash((prev) => ({ ...prev, [hash]: false }))
-    }
-  }
-
-  async function onRegisterSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!registerFile) return
-
-    setRegisterError(null)
-    setRegisterResult(null)
-    setRegisterLoading(true)
-    try {
-      // Step 0: Ensure wallet is connected (backend links encryption material to owner)
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      if (!walletAddress) throw new Error('Connect wallet first.')
-
-      // Step 1: Upload to backend (backend encrypts + uploads to IPFS; CID + key stay server-side)
-      const upload = await postFile<RegisterResponse>('/api/upload', registerFile, {
-        headers: { 'x-wallet-address': walletAddress },
-      })
-      setRegisterResult({
-        ...upload,
-        message: upload.alreadyRegistered
-          ? (upload.message ?? 'This document hash is already registered on-chain. No new transaction is required.')
-          : 'Accept the transaction in MetaMask.',
-      })
-
-      if (upload.alreadyRegistered) {
-        return
-      }
-
-      // Step 2: Register the document hash on-chain (CID stays off-chain)
-      const { contract } = await getSignerAndContract()
-
-      const tx = await contract.registerDocument(upload.hash, '')
-      const receipt = await tx.wait()
-      setRegisterResult({
-        ...upload,
-        message: 'Registered successfully. Document hash recorded on-chain.',
-        chain: {
-          ...upload.chain,
-          txHash: tx.hash,
-          blockNumber: receipt?.blockNumber ?? null,
-        },
-      })
-
-      // Update "My documents"
-      await refreshMyDocuments()
-    } catch (err) {
-      setRegisterError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setRegisterLoading(false)
-    }
-  }
-
-  async function revokeThisVersion(hash: string) {
-    setRevokeStatusByHash((prev) => ({ ...prev, [hash]: null }))
-    setRevokeLoadingByHash((prev) => ({ ...prev, [hash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      const { contract } = await getSignerAndContract()
+      const address = await ensureContractAddress()
+      const ethereum = window.ethereum
+      if (!ethereum) throw new Error('Wallet provider unavailable')
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
       const tx = await contract.revokeDocument(hash)
+      pushToast('Revocation pending', shortHash(hash), 'info')
       await tx.wait()
-      setRevokeStatusByHash((prev) => ({ ...prev, [hash]: 'Revoked this version.' }))
-      await refreshMyDocuments()
-    } catch (err) {
-      setRevokeStatusByHash((prev) => ({ ...prev, [hash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setRevokeLoadingByHash((prev) => ({ ...prev, [hash]: false }))
+      pushToast('Document revoked', shortHash(hash), 'success')
+      setDashboardDocs((current) => current.filter((doc) => doc.hash !== hash))
+      await refreshDashboardDocs()
+    } catch (error) {
+      pushToast('Revoke failed', error instanceof Error ? error.message : String(error), 'error')
     }
   }
 
-  async function revokeAllVersions(rootHash: string) {
-    setRevokeRootStatusByRoot((prev) => ({ ...prev, [rootHash]: null }))
-    setRevokeRootLoadingByRoot((prev) => ({ ...prev, [rootHash]: true }))
-    try {
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      const { contract } = await getSignerAndContract()
-      const tx = await contract.revokeDocumentRoot(rootHash)
-      await tx.wait()
-      setRevokeRootStatusByRoot((prev) => ({ ...prev, [rootHash]: 'Revoked the entire document root.' }))
-      await refreshMyDocuments()
-    } catch (err) {
-      setRevokeRootStatusByRoot((prev) => ({ ...prev, [rootHash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setRevokeRootLoadingByRoot((prev) => ({ ...prev, [rootHash]: false }))
-    }
+  const metrics = {
+    totalDocuments: dashboardDocs.length,
+    sharedWithMe: sharedDocs.length,
+    verifiedThisMonth: dashboardDocs.filter((doc) => {
+      if (!doc.verified || !doc.createdAt) return false
+      return Date.now() - doc.createdAt * 1000 <= 1000 * 60 * 60 * 24 * 30
+    }).length,
   }
 
-  async function addNewVersion(rootHash: string) {
-    setNewVersionStatusByRoot((prev) => ({ ...prev, [rootHash]: null }))
-    setNewVersionLoadingByRoot((prev) => ({ ...prev, [rootHash]: true }))
-    try {
-      const file = newVersionFileByRoot[rootHash]
-      if (!file) throw new Error('Choose a file for the new version first.')
-
-      if (!walletConnected) {
-        await connectWallet()
-      }
-      if (!walletAddress) throw new Error('Connect wallet first.')
-
-      const upload = await postFile<RegisterResponse>('/api/upload', file, {
-        headers: { 'x-wallet-address': walletAddress },
-      })
-
-      if (upload.alreadyRegistered) {
-        throw new Error('This file hash is already registered; choose a different file/version.')
-      }
-
-      const { contract } = await getSignerAndContract()
-      const tx = await contract.addDocumentVersion(rootHash, upload.hash, '')
-      await tx.wait()
-
-      setNewVersionStatusByRoot((prev) => ({ ...prev, [rootHash]: `Added new version (tx: ${shortHash(tx.hash, 10)}).` }))
-      setNewVersionFileByRoot((prev) => ({ ...prev, [rootHash]: null }))
-      await refreshMyDocuments()
-    } catch (err) {
-      setNewVersionStatusByRoot((prev) => ({ ...prev, [rootHash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setNewVersionLoadingByRoot((prev) => ({ ...prev, [rootHash]: false }))
-    }
-  }
-
-  async function loadVersionsForRoot(rootHash: string) {
-    setVersionsErrorByRoot((prev) => ({ ...prev, [rootHash]: null }))
-    setVersionsLoadingByRoot((prev) => ({ ...prev, [rootHash]: true }))
-    try {
-      const { contract } = await getSignerAndContract()
-      const versions = (await contract.getDocumentVersions(rootHash)) as string[]
-      setVersionsByRootHash((prev) => ({ ...prev, [rootHash]: versions }))
-    } catch (err) {
-      setVersionsErrorByRoot((prev) => ({ ...prev, [rootHash]: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setVersionsLoadingByRoot((prev) => ({ ...prev, [rootHash]: false }))
-    }
-  }
-
-  const registerIpfsUrl = registerResult?.ipfs?.url ? withHttps(registerResult.ipfs.url) : null
-
+  const filteredDashboardDocs = dashboardDocs.filter((doc) => {
+    const query = dashboardFilter.trim().toLowerCase()
+    if (!query) return true
+    return [doc.name, doc.hash, doc.owner ?? '', doc.status].some((value) => value.toLowerCase().includes(query))
+  })
 
   return (
-    <div className="site">
-      <nav className="nav">
-        <div className="navInner">
-          <a className="brand" href="#home" aria-label="Home">
-            <span className="brandMark" aria-hidden="true" />
-            <span className="brandText">DocuChain</span>
-          </a>
-          <div className="navLinks">
-            <a href="#home">Home</a>
-            <a href="#upload">Upload</a>
-            <a href="#mydocs">My Docs</a>
-            <a href="#sharedDocs">Shared Docs</a>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            {walletConnected ? (
-              <>
-                <span className="muted" title={walletAddress ?? ''}>
-                  {shortAddr(walletAddress ?? '')}
-                </span>
-                <button className="btnGhost" type="button" onClick={promptWalletAccountSelection}>
-                  Change account
-                </button>
-                <button className="btnGhost" type="button" onClick={disconnectWalletUiOnly}>
-                  Disconnect
-                </button>
-              </>
-            ) : (
-              <button className="btnGhost" type="button" onClick={connectWallet}>
-                Connect Wallet
-              </button>
-            )}
-            <a className="navCta" href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
-              API Health
-            </a>
-          </div>
-        </div>
-      </nav>
+    <div className={`site theme-${theme}`}>
+      <Header
+        activePage={activePage}
+        balance={balance}
+        backendChainId={backendChainId}
+        chainId={chainId}
+        contractAddress={contractAddress}
+        onDisconnect={disconnectWallet}
+        onNavChange={setActivePage}
+        onVerifyDrop={handleGlobalVerifyDrop}
+        onVerifyInputClick={() => verifyInputRef.current?.click()}
+        onVerifyInputSelected={handleGlobalVerifyDrop}
+        verifyBusy={verifyBusy}
+        verifyPreview={verifyPreview}
+        walletAddress={walletAddress}
+        walletBusy={walletBusy}
+        verifyInputRef={verifyInputRef}
+      />
 
-      <header id="home" className="hero">
-        <div className="container">
-          <h1 className="heroTitle">
-            Build <span className="accent">trust</span> into your documents
-          </h1>
-          <p className="heroSub">
-            Upload a document to store its hash on-chain and its content on IPFS. Share access by wallet address and
-            manage versions and revocations.
-          </p>
-          <div className="heroActions">
-            <a className="btnPrimary" href="#upload">
-              Upload Document
-            </a>
-            <a className="btnGhost" href="#mydocs">
-              My Docs
-            </a>
-          </div>
-
-          <div className="featureRow">
-            <div className="featureCard">
-              <div className="featureIcon">LC</div>
-              <div>
-                <div className="featureTitle">Lower cost</div>
-                <div className="featureText">Only the document hash is stored on-chain.</div>
-              </div>
-            </div>
-            <div className="featureCard">
-              <div className="featureIcon">FP</div>
-              <div>
-                <div className="featureTitle">Fast Process</div>
-                <div className="featureText">Verification is a quick on-chain check.</div>
-              </div>
-            </div>
-            <div className="featureCard">
-              <div className="featureIcon">SC</div>
-              <div>
-                <div className="featureTitle">Secure</div>
-                <div className="featureText">Tamper-evident: content changes ⇒ hash changes.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="container">
-        {(walletError || chainMismatch) && (
-          <div className="alert bad" style={{ marginTop: 18 }}>
-            {walletError ? walletError : null}
-            {walletError && chainMismatch ? ' ' : null}
-            {chainMismatch ? `Wrong network: wallet chainId=${walletChainId} but backend is on chainId=${backendChainId}.` : null}
-          </div>
+      <main className="pageShell container">
+        {activePage === 'home' && (
+          <LandingPage onConnect={connectWallet} onGoUpload={() => setActivePage('upload')} />
         )}
 
-        <section id="upload" className="section">
-          <div className="sectionHead">
-            <h2>Upload Document</h2>
-            <p className="muted">
-              Upload a file to IPFS, then register its hash on-chain using your connected wallet (prevents relay/replay).
-            </p>
-          </div>
+        {activePage === 'dashboard' && (
+          <DashboardPage
+            balance={balance}
+            docs={filteredDashboardDocs}
+            filter={dashboardFilter}
+            loading={dashboardLoading}
+            metrics={metrics}
+            onDownload={downloadDocument}
+            onFilterChange={setDashboardFilter}
+            onRefresh={refreshDashboardDocs}
+            onRevoke={revokeDocument}
+            onShare={openShareDialog}
+            walletAddress={walletAddress}
+          />
+        )}
 
-          <div className="panel">
-            <form className="formRow" onSubmit={onRegisterSubmit}>
-              <label className="fileInput">
-                <span className="label">Choose file</span>
-                <input type="file" onChange={(e) => setRegisterFile(e.target.files?.[0] ?? null)} required />
-              </label>
-              <button className="btnPrimary" type="submit" disabled={!canRegister}>
-                {registerLoading ? 'Uploading…' : 'Upload'}
-              </button>
-            </form>
+        {activePage === 'upload' && (
+          <UploadPage
+            file={uploadFile}
+            hash={uploadHash}
+            inputRef={uploadInputRef}
+            message={uploadMessage}
+            onPickFile={() => uploadInputRef.current?.click()}
+            onRegister={registerSelectedDocument}
+            onSelectFile={setUploadFile}
+            stage={uploadStage}
+            busy={uploadBusy}
+            progress={uploadProgress}
+          />
+        )}
 
-            {registerError && <div className="alert bad">{registerError}</div>}
+        {activePage === 'shared' && (
+          <SharedPage
+            docs={sharedDocs}
+            onDownload={downloadDocument}
+            onRefresh={() => void refreshDashboardDocs()}
+          />
+        )}
 
-            {registerResult && (
-              <div className="resultBox">
-                <div className={`status ${registerResult.message?.toLowerCase().includes('registered') ? 'ok' : 'ok'}`}>
-                  {registerResult.message ?? 'Registered successfully'}
-                </div>
-
-                <div className="kvGrid">
-                  <div className="kvItem">
-                    <div className="k">Hash</div>
-                    <div className="v mono">{registerResult.hash}</div>
-                  </div>
-
-                  <div className="kvItem">
-                    <div className="k">IPFS</div>
-                    <div className="v">
-                      {registerIpfsUrl ? (
-                        <a className="link" href={registerIpfsUrl} target="_blank" rel="noreferrer">
-                          {shortHash(registerIpfsUrl, 22)}
-                        </a>
-                      ) : (
-                        <span className="muted">{registerResult.ipfs.provider ?? 'not available'}</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="kvItem">
-                    <div className="k">Tx</div>
-                    <div className="v mono">{registerResult.chain.txHash ?? '—'}</div>
-                  </div>
-
-                  <div className="kvItem">
-                    <div className="k">Block</div>
-                    <div className="v">{registerResult.chain.blockNumber ?? '—'}</div>
-                  </div>
-
-                  <div className="kvItem">
-                    <div className="k">Encryption</div>
-                    <div className="v">
-                      {registerResult.encryption?.enabled ? (
-                        <span className="mono">
-                          {'format' in registerResult.encryption
-                            ? `${registerResult.encryption.format} (${registerResult.encryption.cipher})`
-                            : registerResult.encryption.cipher}
-                        </span>
-                      ) : (
-                        <span className="muted">off</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {registerIpfsUrl && (
-                  <div className="resultActions">
-                    <a className="btnGhost" href={registerIpfsUrl} target="_blank" rel="noreferrer">
-                      View on IPFS
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section id="mydocs" className="section">
-          <div className="sectionHead">
-            <h2>My Documents</h2>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <p className="muted" style={{ margin: 0 }}>
-                Documents registered by your connected wallet. You can also share viewer access by wallet address.
-              </p>
-              <div className="tooltip" aria-hidden>
-                <div className="tooltipIcon" tabIndex={0}>i</div>
-                <div className="tooltipText">
-                  <strong>Integrity verification</strong>
-                  <div style={{ marginTop: 6 }}>
-                    When you download a document the server decrypts the stored file and computes a Keccak-256
-                    hash of the plaintext. That hash is checked against the blockchain record. If the hash is not
-                    found the download is blocked to protect you from altered files. The UI will show a clear
-                    verification message and we never display raw hashes to users. Only recipient account addresses
-                    (shortened) are shown when sharing access.
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="formRow" style={{ justifyContent: 'space-between' }}>
-              <button
-                className="btnPrimary"
-                type="button"
-                onClick={refreshMyDocuments}
-                disabled={!walletConnected || myDocsLoading}
-              >
-                {myDocsLoading ? 'Loading…' : 'Load My Docs'}
-              </button>
-              {contractAddress && (
-                <span className="muted mono" title={contractAddress}>
-                  Contract: {shortAddr(contractAddress)}
-                </span>
-              )}
-            </div>
-
-            {myDocsError && <div className="alert bad">{myDocsError}</div>}
-
-            {walletConnected && !myDocsLoading && myDocs.length === 0 && (
-              <div className="muted">No documents found for this wallet yet.</div>
-            )}
-
-            {myDocs.length > 0 && (
-              <div className="resultBox">
-                <div className="kvGrid">
-                  {myDocs.map((d) => (
-                    <div className="kvItem" key={d.hash}>
-                      <div className="k">Document</div>
-                      <div className="v docContent">
-                        {d.revoked ? (
-                          <div>
-                            <div className="status bad" style={{ display: 'inline-block' }}>
-                              Revoked
-                            </div>
-                            <div className="muted" style={{ marginTop: 6 }}>
-                              This version is revoked on-chain.
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="muted" style={{ marginTop: 2 }}>
-                            CID is kept off-chain.
-                          </div>
-                        )}
-
-                        <div className="docRow" style={{ marginTop: 10 }}>
-                          <button
-                            className="btnGhost"
-                            type="button"
-                            disabled={!walletConnected || !!myViewLoadingByHash[d.hash]}
-                            onClick={() => viewMyHash(d.hash)}
-                          >
-                            {myViewLoadingByHash[d.hash] ? 'Opening…' : 'View'}
-                          </button>
-                          <button
-                            className="btnGhost"
-                            type="button"
-                            disabled={!walletConnected || !!myDownloadLoadingByHash[d.hash]}
-                            onClick={() => downloadMyHash(d.hash)}
-                          >
-                            {myDownloadLoadingByHash[d.hash] ? 'Downloading…' : 'Download'}
-                          </button>
-                          <button
-                            className="btnGhost"
-                            type="button"
-                            onClick={() => removeMyDocument(d.hash)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-
-                        {myViewStatusByHash[d.hash] && <div className="alert bad">{myViewStatusByHash[d.hash]}</div>}
-
-                        {myDownloadStatusByHash[d.hash] && <div className="alert bad">{myDownloadStatusByHash[d.hash]}</div>}
-                        <div className="muted mono docMetaLine">
-                          {shortHash(d.hash, 14)}
-                        </div>
-
-                        <div className="muted mono docMetaLine">
-                          Root: {shortHash(d.rootHash, 14)} · v{d.version}
-                        </div>
-
-                        <div className="docSection">
-                          <div className="docHint">
-                            Share viewer access (wallet address)
-                          </div>
-                          <div className="docRow">
-                            <input
-                              className="textInput"
-                              value={shareAddressByHash[d.hash] ?? ''}
-                              onChange={(e) =>
-                                setShareAddressByHash((prev) => ({ ...prev, [d.hash]: e.target.value }))
-                              }
-                              placeholder="0x..."
-                            />
-                            <div className="docButtons">
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!walletConnected || !!shareLoadingByHash[d.hash]}
-                                onClick={() => grantViewerAccess(d.hash, shareAddressByHash[d.hash] ?? '')}
-                              >
-                                {shareLoadingByHash[d.hash] ? 'Working…' : 'Grant'}
-                              </button>
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!walletConnected || !!shareLoadingByHash[d.hash]}
-                                onClick={() => revokeViewerAccess(d.hash, shareAddressByHash[d.hash] ?? '')}
-                              >
-                                {shareLoadingByHash[d.hash] ? 'Working…' : 'Revoke'}
-                              </button>
-                            </div>
-                          </div>
-                          {shareStatusByHash[d.hash] && (
-                            <div
-                              className={`alert ${
-                                (shareStatusByHash[d.hash] ?? '').toLowerCase().includes('0x') ? 'ok' : 'bad'
-                              }`}
-                            >
-                              {shareStatusByHash[d.hash]}
-                            </div>
-                          )}
-                        </div>
-
-                        {!d.revoked && (
-                          <div className="docRow">
-                            <button
-                              className="btnGhost"
-                              type="button"
-                              disabled={!walletConnected || !!revokeLoadingByHash[d.hash]}
-                              onClick={() => revokeThisVersion(d.hash)}
-                            >
-                              {revokeLoadingByHash[d.hash] ? 'Revoking…' : 'Revoke version'}
-                            </button>
-
-                            {d.hash === d.rootHash && (
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!walletConnected || !!revokeRootLoadingByRoot[d.rootHash]}
-                                onClick={() => revokeAllVersions(d.rootHash)}
-                              >
-                                {revokeRootLoadingByRoot[d.rootHash] ? 'Revoking…' : 'Revoke all versions'}
-                              </button>
-                            )}
-                          </div>
-                        )}
-
-                        {(revokeStatusByHash[d.hash] || (d.hash === d.rootHash && revokeRootStatusByRoot[d.rootHash])) && (
-                          <div className="alert ok">
-                            {revokeStatusByHash[d.hash] ?? revokeRootStatusByRoot[d.rootHash]}
-                          </div>
-                        )}
-
-                        {d.hash === d.rootHash && !d.revoked && (
-                          <div className="docSection">
-                            <div className="docHint">
-                              Add a new version under this root
-                            </div>
-                            <div className="docRow">
-                              <input
-                                type="file"
-                                className="docFileInput"
-                                onChange={(e) =>
-                                  setNewVersionFileByRoot((prev) => ({
-                                    ...prev,
-                                    [d.rootHash]: e.target.files?.[0] ?? null,
-                                  }))
-                                }
-                              />
-
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!walletConnected || !!newVersionLoadingByRoot[d.rootHash]}
-                                onClick={() => addNewVersion(d.rootHash)}
-                              >
-                                {newVersionLoadingByRoot[d.rootHash] ? 'Adding…' : 'Add version'}
-                              </button>
-                            </div>
-
-                            {newVersionStatusByRoot[d.rootHash] && (
-                              <div
-                                className={`alert ${newVersionStatusByRoot[d.rootHash]?.toLowerCase().includes('added') ? 'ok' : 'bad'}`}
-                              >
-                                {newVersionStatusByRoot[d.rootHash]}
-                              </div>
-                            )}
-
-                            <div className="docRow">
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!!versionsLoadingByRoot[d.rootHash]}
-                                onClick={() => loadVersionsForRoot(d.rootHash)}
-                              >
-                                {versionsLoadingByRoot[d.rootHash] ? 'Loading…' : 'Show versions'}
-                              </button>
-                              {versionsErrorByRoot[d.rootHash] && (
-                                <span className="muted">{versionsErrorByRoot[d.rootHash]}</span>
-                              )}
-                            </div>
-
-                            {versionsByRootHash[d.rootHash] && (
-                              <div className="muted mono" style={{ whiteSpace: 'pre-wrap' }}>
-                                {versionsByRootHash[d.rootHash]!.map((h, i) => `${i + 1}. ${h}`).join('\n')}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section id="sharedDocs" className="section">
-          <div className="sectionHead">
-            <h2>View Shared Documents</h2>
-            <p className="muted">Documents shared with you</p>
-          </div>
-
-          <div className="panel">
-            <div className="formRow" style={{ justifyContent: 'space-between' }}>
-              <button
-                className="btnPrimary"
-                type="button"
-                onClick={loadSharedDocumentsFromBlockchain}
-                disabled={!walletConnected || sharedDocsLoading}
-              >
-                {sharedDocsLoading ? 'Loading…' : 'Load Shared Doc'}
-              </button>
-            </div>
-
-            {sharedDocsError && <div className="alert bad">{sharedDocsError}</div>}
-
-            {sharedDocs.length > 0 && (
-              <div className="resultBox">
-                <div className="kvGrid">
-                  {sharedDocs.map((d) => (
-                    <div className="kvItem" key={d.hash}>
-                      <div className="k">Document</div>
-                      <div className="v">
-                        {d.revoked ? (
-                          <div>
-                            <div className="status bad" style={{ display: 'inline-block' }}>
-                              Revoked
-                            </div>
-                            <div className="muted" style={{ marginTop: 6 }}>
-                              CID hidden (revoked documents cannot be viewed)
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="muted">{d.status ?? (d.access ? 'Not available' : 'No access')}</div>
-                        )}
-
-                        {d.owner && (
-                          <div className="muted mono" style={{ marginTop: 6 }}>
-                            Shared by: {d.owner}
-                          </div>
-                        )}
-
-                        <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <button className="btnGhost" type="button" onClick={() => removeSharedHash(d.hash)}>
-                            Remove
-                          </button>
-
-                          {!d.revoked && (
-                            <>
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!!sharedViewLoadingByHash[d.hash]}
-                                onClick={() => viewSharedHash(d.hash)}
-                              >
-                                {sharedViewLoadingByHash[d.hash] ? 'Opening…' : 'View'}
-                              </button>
-                              <button
-                                className="btnGhost"
-                                type="button"
-                                disabled={!!sharedDownloadLoadingByHash[d.hash]}
-                                onClick={() => downloadOrDecryptSharedHash(d.hash)}
-                              >
-                                {sharedDownloadLoadingByHash[d.hash] ? 'Working…' : 'Download'}
-                              </button>
-                            </>
-                          )}
-                        </div>
-
-                        {sharedDownloadStatusByHash[d.hash] && (
-                          <div
-                            className={`alert ${/(download|integrity)/i.test(sharedDownloadStatusByHash[d.hash] || '') ? 'ok' : 'bad'}`}
-                            style={{ marginTop: 10 }}
-                          >
-                            {sharedDownloadStatusByHash[d.hash]}
-                          </div>
-                        )}
-
-                        {sharedDownloadProofByHash[d.hash] && (
-                          <div className="resultBox" style={{ marginTop: 10 }}>
-                            {sharedDownloadProofByHash[d.hash]?.verified && (
-                              <div className="status ok" style={{ marginBottom: 10 }}>
-                                Hash verified
-                              </div>
-                            )}
-                            <div className="kvGrid">
-                              <div className="kvItem"><div className="k">Registered on-chain by</div><div className="v mono">{sharedDownloadProofByHash[d.hash]?.owner}</div></div>
-                              <div className="kvItem"><div className="k">Date + time</div><div className="v mono">{sharedDownloadProofByHash[d.hash]?.recordedAt}</div></div>
-                              <div className="kvItem"><div className="k">Hash in blockchain</div><div className="v mono">{sharedDownloadProofByHash[d.hash]?.hash}</div></div>
-                              <div className="kvItem"><div className="k">Download Document Hash</div><div className="v mono">{sharedDownloadProofByHash[d.hash]?.hash}</div></div>
-                            </div>
-                          </div>
-                        )}
-
-                        {sharedViewStatusByHash[d.hash] && (
-                          <div
-                            className={`alert ${/(preview|opened|integrity)/i.test(sharedViewStatusByHash[d.hash] || '') ? 'ok' : 'bad'}`}
-                            style={{ marginTop: 10 }}
-                          >
-                            {sharedViewStatusByHash[d.hash]}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
+        {activePage === 'profile' && (
+          <ProfilePage
+            profile={profile}
+            loading={profileLoading}
+            saving={profileSaving}
+            walletAddress={walletAddress}
+            backendChainId={backendChainId}
+            chainId={chainId}
+            theme={theme}
+            onDisconnect={disconnectWallet}
+            onProfileChange={setProfile}
+            onSave={() => void saveProfileDraft()}
+            onThemeChange={setTheme}
+          />
+        )}
       </main>
 
-      <footer className="footer">
-        <div className="container footerInner">
-          <div className="footerBrand">
-            <div className="brandSmall">
-              <span className="brandMark" aria-hidden="true" />
-              <span className="brandText">DocuChain</span>
+      {shareDialog.open && shareDialog.doc ? (
+        <div className="overlayBackdrop" role="presentation" onClick={closeShareDialog}>
+          <div className="shareModal" role="dialog" aria-modal="true" aria-labelledby="share-modal-title" onClick={(event) => event.stopPropagation()}>
+            <div className="shareModalHeader">
+              <div>
+                <div className="eyebrow">Share document</div>
+                <h3 id="share-modal-title">Grant viewer access</h3>
+              </div>
+              <button type="button" className="ghostButton" onClick={closeShareDialog} disabled={shareDialog.busy}>
+                Close
+              </button>
             </div>
-            <p className="muted">Blockchain + IPFS document verification demo.</p>
-          </div>
-          <div className="footerLinks">
-            <a href="#upload">Upload</a>
-            <a href="#mydocs">My Docs</a>
-            <a href="#sharedDocs">Shared Docs</a>
-            <a href={apiUrl('/api/health')} target="_blank" rel="noreferrer">
-              API Health
-            </a>
+
+            <div className="shareModalBody">
+              <div className="shareDocSummary">
+                <strong>{shareDialog.doc.name}</strong>
+                <span className="mutedCopy">{shortHash(shareDialog.doc.hash)}</span>
+              </div>
+
+              <label className="shareField">
+                <span>Recipient wallet address</span>
+                <input
+                  className="textInput"
+                  value={shareDialog.viewer}
+                  onChange={(event) => setShareDialog((current) => ({ ...current, viewer: event.target.value }))}
+                  placeholder="0x..."
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+
+              <p className="mutedCopy">
+                This will call <span className="monoInline">grantViewer</span> on-chain so the other wallet can access this document.
+              </p>
+            </div>
+
+            <div className="shareModalActions">
+              <button type="button" className="secondaryButton" onClick={closeShareDialog} disabled={shareDialog.busy}>
+                Cancel
+              </button>
+              <button type="button" className="primaryButton" onClick={() => void submitShareDialog()} disabled={shareDialog.busy || !shareDialog.viewer.trim()}>
+                {shareDialog.busy ? 'Sharing...' : 'Share access'}
+              </button>
+            </div>
           </div>
         </div>
-      </footer>
+      ) : null}
+
+      <ToastStack toasts={toasts} />
     </div>
+  )
+}
+
+function Header(props: {
+  activePage: PageId
+  balance: string | null
+  backendChainId: number | null
+  chainId: number | null
+  contractAddress: string | null
+  onDisconnect: () => void
+  onNavChange: (page: PageId) => void
+  onVerifyDrop: (file: File) => Promise<void>
+  onVerifyInputClick: () => void
+  onVerifyInputSelected: (file: File) => Promise<void>
+  verifyBusy: boolean
+  verifyPreview: VerifyPreview | null
+  walletAddress: string | null
+  walletBusy: boolean
+  verifyInputRef: React.RefObject<HTMLInputElement | null>
+}) {
+  const {
+    activePage,
+    balance,
+    backendChainId,
+    chainId,
+    contractAddress,
+    onDisconnect,
+    onNavChange,
+    verifyPreview,
+    walletAddress,
+  } = props
+
+  const navItems: Array<{ id: PageId; label: string }> = [
+    { id: 'home', label: 'Home' },
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'upload', label: 'Upload' },
+    { id: 'shared', label: 'Shared With Me' },
+    { id: 'profile', label: 'Profile' },
+  ]
+
+  return (
+    <header className="topBar">
+      {walletAddress ? (
+        <div className="container topBarMini">
+          <div className="walletChip mini profileChip">
+            <img className="walletAvatar" src={profilePhoto} alt="My profile" />
+            <div className="walletProfileCopy">
+              <div className="walletProfileLabel">My profile</div>
+              <div className="walletAddress">{shortAddr(walletAddress)}</div>
+              <div className="walletMeta">
+                {networkLabel(chainId ?? backendChainId)}{balance ? ` · ${Number(balance).toFixed(3)} ETH` : ''}
+              </div>
+            </div>
+            <button type="button" className="ghostButton" onClick={onDisconnect}>
+              Logout
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <div className="container topBarInner">
+        <div className="brandBlock">
+          <button className="brand" type="button" onClick={() => onNavChange('home')}>
+            <span className="brandMark" />
+            <span className="brandText">BDVS</span>
+          </button>
+          <span className="networkBadge">{networkLabel(chainId ?? backendChainId)}</span>
+        </div>
+
+        <nav className="navTabs" aria-label="Primary">
+          {navItems.map((item) => (
+            <button key={item.id} type="button" className={activePage === item.id ? 'navTab active' : 'navTab'} onClick={() => onNavChange(item.id)}>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="navActions" />
+      </div>
+
+      <div className="container verifyResultRow">
+        {verifyPreview ? (
+          <div className={verifyPreview.verified ? 'verifyResult verified' : 'verifyResult'}>
+            <span className={verifyPreview.verified ? 'statusPill success' : 'statusPill warning'}>
+              {verifyPreview.verified ? 'Verified' : 'Not Found'}
+            </span>
+            <button className="hashPill" type="button" onClick={() => copyText(verifyPreview.hash)}>
+              {shortHash(verifyPreview.hash)}
+            </button>
+            <span className="verifyNote">{verifyPreview.note}</span>
+          </div>
+        ) : (
+          <div className="verifyResult verifyEmpty">
+            {contractAddress ? <span className="verifyNote subtle">Contract {shortAddr(contractAddress)}</span> : null}
+          </div>
+        )}
+      </div>
+    </header>
+  )
+}
+
+function LandingPage(props: {
+  onConnect: () => void
+  onGoUpload: () => void
+}) {
+  const { onConnect, onGoUpload } = props
+
+  return (
+    <section className="landingPageShell">
+      <div className="landingGrid">
+        <div className="heroCopy">
+          <div className="eyebrow">Secure vault for verified records</div>
+          <h1>Secure Documents. Immutable Verification.</h1>
+          <p className="lead">
+            BDVS combines blockchain verification, encrypted IPFS storage, and wallet-based access control into one secure document ecosystem. Files stay encrypted off-chain while their authenticity is permanently proven on-chain.
+            <br></br>
+            Designed for secure digital workflows, the platform offers transparent verification, tamper detection, and a simplified document experience without the complexity of traditional dashboards.
+          </p>
+
+          <div className="heroActions">
+            <button type="button" className="primaryButton heroButton" onClick={onConnect}>
+              Connect Wallet
+            </button>
+            <button type="button" className="secondaryButton heroButton" onClick={onGoUpload}>
+              Open Upload Studio
+            </button>
+          </div>
+
+        </div>
+
+        <div className="heroPanel">
+          <div className="vaultDisplay videoDisplay">
+            <div className="blockchainStage">
+              <BlockchainBackdrop />
+              <div className="blockchainGlow" />
+              <div className="blockchainOrbit orbitOne">
+                <span className="orbitNode" />
+              </div>
+              <div className="blockchainOrbit orbitTwo">
+                <span className="orbitNode" />
+              </div>
+              <div className="blockchainOrbit orbitThree">
+                <span className="orbitNode" />
+              </div>
+
+              <div className="blockchainConveyor" aria-hidden="true">
+                <div className="blockchainTrack">
+                  <div className="chainRun">
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                  </div>
+                  <div className="chainRun" aria-hidden="true">
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                    <div className="chainBlock" />
+                    <div className="chainLink" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div className="featureGrid homeFeatureGrid">
+        <article className="featureCard">
+          <span className="featureTag">Document Overview</span>
+          <p>See the document flow, access status, and trust signals at a glance.</p>
+        </article>
+        <article className="featureCard">
+          <span className="featureTag">Encrypted Storage</span>
+          <p>Payloads stay encrypted off-chain while the chain stores proof and access metadata.</p>
+        </article>
+        <article className="featureCard">
+          <span className="featureTag">Wallet-Based Control</span>
+          <p>MetaMask manages registration, revocation, and owner-authorized downloads.</p>
+        </article>
+      </div>
+
+      <div className="flowCard homeFlowCard">
+        <div className="sectionKicker">Workflow</div>
+        <div className="timeline">
+          <div className="timelineStep"><span>Upload</span><small>Choose a file</small></div>
+          <div className="timelineArrow" aria-hidden="true">→</div>
+          <div className="timelineStep"><span>Encrypt</span><small>Backend locks payload</small></div>
+          <div className="timelineArrow" aria-hidden="true">→</div>
+          <div className="timelineStep"><span>Chain</span><small>MetaMask signs proof</small></div>
+          <div className="timelineArrow" aria-hidden="true">→</div>
+          <div className="timelineStep"><span>Verify</span><small>Anyone can read trust</small></div>
+        </div>
+      </div>
+
+      <footer className="homeFooter">
+        <div>
+          <div className="brandText">BDVS</div>
+          <p>Encrypted document verification for teams that want proof without dashboard clutter.</p>
+        </div>
+        <div className="footerMeta">
+          <span>Home overview</span>
+          <span>Theme aware</span>
+          <span>On-chain integrity</span>
+        </div>
+      </footer>
+    </section>
+  )
+}
+
+function DashboardPage(props: {
+  balance: string | null
+  docs: LedgerDocument[]
+  filter: string
+  loading: boolean
+  metrics: { totalDocuments: number; sharedWithMe: number; verifiedThisMonth: number }
+  onDownload: (hash: string, name: string) => Promise<void>
+  onFilterChange: (value: string) => void
+  onRefresh: () => Promise<void>
+  onRevoke: (hash: string) => Promise<void>
+  onShare: (doc: LedgerDocument) => void
+  walletAddress: string | null
+}) {
+  const { balance, docs, filter, loading, metrics, onDownload, onFilterChange, onRefresh, onRevoke, onShare, walletAddress } = props
+
+  return (
+    <section className="pageStack">
+      <div className="sectionHeading">
+        <div>
+          <div className="eyebrow">Dashboard</div>
+          <h2>Vault command center</h2>
+        </div>
+        <button type="button" className="secondaryButton" onClick={() => void onRefresh()}>
+          Refresh ledger
+        </button>
+      </div>
+
+      {!walletAddress ? <div className="emptyState">Connect MetaMask to load your document vault.</div> : null}
+
+      <div className="metricsGrid">
+        <article className="metricCard">
+          <span>Total Documents</span>
+          <strong>{metrics.totalDocuments}</strong>
+          <small>{walletAddress ? shortAddr(walletAddress) : 'No wallet connected'}</small>
+        </article>
+        <article className="metricCard">
+          <span>Shared With Me</span>
+          <strong>{metrics.sharedWithMe}</strong>
+          <small>{balance ? `${Number(balance).toFixed(3)} ETH available` : 'Wallet balance hidden until connect'}</small>
+        </article>
+        <article className="metricCard">
+          <span>Verified This Month</span>
+          <strong>{metrics.verifiedThisMonth}</strong>
+          <small>Chain proofs with recent timestamps</small>
+        </article>
+      </div>
+
+      <div className="panelShell">
+        <div className="panelHeader">
+          <div>
+            <div className="sectionKicker">Documents</div>
+            <h3>Filterable registry</h3>
+          </div>
+          <input className="textInput filterInput" value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Search by name, hash, owner, or status" />
+        </div>
+
+        <div className="tableWrap">
+          <table className="docTable">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Upload date</th>
+                <th>Hash</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="tableEmpty">Loading ledger records...</td>
+                </tr>
+              ) : docs.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="tableEmpty">No documents match the current filter.</td>
+                </tr>
+              ) : (
+                docs.map((doc) => (
+                  <tr key={doc.hash} className={doc.status === 'Revoked' ? 'revokedRow' : ''}>
+                    <td>
+                      <div className="docNameBlock">
+                        <strong>{doc.name}</strong>
+                        <small>{doc.owner ? shortAddr(doc.owner) : 'Unknown owner'}</small>
+                      </div>
+                    </td>
+                    <td>{formatUnixSeconds(doc.createdAt)}</td>
+                    <td>
+                      <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
+                        {shortHash(doc.hash)}
+                      </button>
+                    </td>
+                    <td>
+                      <span className={doc.status === 'Revoked' ? 'statusPill danger' : 'statusPill success'}>{doc.status}</span>
+                    </td>
+                    <td>
+                      <div className="rowActions">
+                        <button type="button" className="ghostButton" disabled={doc.status === 'Revoked'} onClick={() => void onDownload(doc.hash, doc.name)}>
+                          Download
+                        </button>
+                        <button type="button" className="ghostButton" onClick={() => onShare(doc)}>
+                          Share
+                        </button>
+                        <button type="button" className="ghostButton dangerButton" disabled={doc.status === 'Revoked'} onClick={() => void onRevoke(doc.hash)}>
+                          Revoke
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function UploadPage(props: {
+  file: File | null
+  hash: string
+  inputRef: React.RefObject<HTMLInputElement | null>
+  message: string
+  onPickFile: () => void
+  onRegister: () => Promise<void>
+  onSelectFile: (file: File | null) => void
+  stage: number
+  busy: boolean
+  progress: number | null
+}) {
+  const { file, inputRef, onPickFile, onRegister, onSelectFile, busy, progress } = props
+
+  return (
+    <section className="pageStack uploadPage">
+      <div className="sectionHeading">
+        <div>
+          <div className="eyebrow">Upload</div>
+          <h2>Register a document on-chain</h2>
+        </div>
+        <button type="button" className="secondaryButton" onClick={onPickFile}>
+          Choose file
+        </button>
+      </div>
+
+      <label
+        className="uploadZone"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          const nextFile = event.dataTransfer.files?.[0] ?? null
+          onSelectFile(nextFile)
+        }}
+      >
+        <input
+          ref={inputRef}
+          className="hiddenInput"
+          type="file"
+          onChange={(event) => onSelectFile(event.target.files?.[0] ?? null)}
+        />
+        <div className="uploadZoneIcon">□</div>
+        <h3>Drag and drop your file here</h3>
+        {file ? (
+          <div className="fileMetaRow">
+            <span>{file.name}</span>
+            <span>{Math.max(1, Math.round(file.size / 1024))} KB</span>
+          </div>
+        ) : null}
+      </label>
+
+      {busy && progress != null ? (
+        <div className="uploadGrid">
+          <div className="panelShell">
+            <div className="uploadProgressBar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
+              <div className="uploadProgressFill" style={{ width: `${progress}%` }} />
+              <div className="progressLabel">{progress}%</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="uploadActions">
+        <button type="button" className="primaryButton" onClick={() => void onRegister()} disabled={busy || !file}>
+          {busy ? 'Working...' : 'Register on Blockchain'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function SharedPage(props: { docs: DocumentSummary[]; onDownload: (hash: string, name: string) => Promise<void>; onRefresh: () => void }) {
+  const { docs, onDownload, onRefresh } = props
+  return (
+    <section className="pageStack">
+      <div className="sectionHeading">
+        <div>
+          <div className="eyebrow">Shared With Me</div>
+          <h2>Inbox-style document feed</h2>
+        </div>
+        <button type="button" className="secondaryButton" onClick={onRefresh}>
+          Refresh inbox
+        </button>
+      </div>
+
+      <div className="sharedGrid">
+        {docs.map((doc) => (
+          <article className="sharedCard" key={doc.hash}>
+            <div className="sharedCardTop">
+              <div>
+                <div className="sharedName">{doc.name}</div>
+                <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
+              </div>
+              <button type="button" className="statusPillButton" onClick={() => void copyText(doc.hash)}>
+                {shortHash(doc.hash)}
+              </button>
+            </div>
+            <div className="sharedMetaRow">
+              <span>Recorded {formatUnixSeconds(doc.createdAt ? Math.floor(doc.createdAt / 1000) : null)}</span>
+              <span className={doc.verified ? 'statusPill success' : 'statusPill warning'}>{doc.verified ? 'Verified ✓' : 'Pending'}</span>
+            </div>
+            <button type="button" className="primaryButton sharedDownload" onClick={() => void onDownload(doc.hash, doc.name)}>
+              Download
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function ProfilePage(props: {
+  profile: ProfileState | null
+  loading: boolean
+  saving: boolean
+  walletAddress: string | null
+  backendChainId: number | null
+  chainId: number | null
+  theme: ThemeMode
+  onDisconnect: () => void
+  onProfileChange: (profile: ProfileState) => void
+  onSave: () => void
+  onThemeChange: (theme: ThemeMode) => void
+}) {
+  const { profile, loading, saving, walletAddress, backendChainId, chainId, theme, onDisconnect, onProfileChange, onSave, onThemeChange } = props
+  const effectiveProfile = profile ?? createFallbackProfile(walletAddress, theme)
+
+  async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(new Error('Unable to read image file'))
+      reader.readAsDataURL(file)
+    })
+    onProfileChange({ ...effectiveProfile, photoDataUrl: dataUrl })
+  }
+
+  return (
+    <section className="pageStack profilePage">
+      <div className="sectionHeading">
+        <div>
+          <div className="eyebrow">Profile</div>
+          <h2>Update your profile</h2>
+        </div>
+        <button type="button" className="secondaryButton" onClick={onDisconnect} disabled={!walletAddress}>
+          Logout
+        </button>
+      </div>
+
+      {!walletAddress ? <div className="emptyState">Connect a wallet to load and save your profile in MongoDB.</div> : null}
+
+      <div className="profileLayout">
+        <article className="profileHeroCard">
+          <img className="profileHeroPhoto" src={effectiveProfile.photoDataUrl || profilePhoto} alt="Profile" />
+          <div className="profileHeroCopy">
+            <div className="sectionKicker">Profile preview</div>
+            <h3>{effectiveProfile.name}</h3>
+            <p>{effectiveProfile.title || 'Document owner'}</p>
+            <div className="profileMetaRow">
+              <span>{shortAddr(walletAddress)}</span>
+              <span>{networkLabel(chainId ?? backendChainId)}</span>
+            </div>
+          </div>
+        </article>
+
+        <div className="profileEditorCard">
+          <label className="profileField">
+            <span>Profile photo</span>
+            <input type="file" accept="image/*" onChange={(event) => void handlePhotoChange(event)} />
+          </label>
+
+          <label className="profileField">
+            <span>Name</span>
+            <input
+              className="textInput"
+              value={effectiveProfile.name}
+              onChange={(event) => onProfileChange({ ...effectiveProfile, name: event.target.value })}
+              placeholder="Your name"
+            />
+          </label>
+
+          <label className="profileField">
+            <span>Role / title</span>
+            <input
+              className="textInput"
+              value={effectiveProfile.title}
+              onChange={(event) => onProfileChange({ ...effectiveProfile, title: event.target.value })}
+              placeholder="Document owner"
+            />
+          </label>
+
+          <label className="profileField">
+            <span>Email</span>
+            <input
+              className="textInput"
+              type="email"
+              value={effectiveProfile.email}
+              onChange={(event) => onProfileChange({ ...effectiveProfile, email: event.target.value })}
+              placeholder="you@example.com"
+            />
+          </label>
+
+          <label className="profileField">
+            <span>Bio</span>
+            <textarea
+              className="textInput profileBio"
+              value={effectiveProfile.bio}
+              onChange={(event) => onProfileChange({ ...effectiveProfile, bio: event.target.value })}
+              placeholder="Short profile bio"
+            />
+          </label>
+
+          <div className="appearanceCard profileSettingsCard">
+            <div className="appearanceHeader">
+              <div>
+                <div className="sectionKicker">Settings</div>
+                <strong>Appearance</strong>
+              </div>
+              <span className="themeBadge">{effectiveProfile.preferredTheme === 'dark' ? 'Dark' : 'White'}</span>
+            </div>
+            <div className="themeSwitch" role="group" aria-label="Theme selection">
+              <button
+                type="button"
+                className={effectiveProfile.preferredTheme === 'dark' ? 'themeOption active' : 'themeOption'}
+                onClick={() => {
+                  onProfileChange({ ...effectiveProfile, preferredTheme: 'dark' })
+                  onThemeChange('dark')
+                }}
+              >
+                Dark
+              </button>
+              <button
+                type="button"
+                className={effectiveProfile.preferredTheme === 'light' ? 'themeOption active' : 'themeOption'}
+                onClick={() => {
+                  onProfileChange({ ...effectiveProfile, preferredTheme: 'light' })
+                  onThemeChange('light')
+                }}
+              >
+                White
+              </button>
+            </div>
+            <p className="themeNote">The theme choice is saved with your profile and can update the whole app shell.</p>
+          </div>
+
+          <div className="profileActions">
+            <button type="button" className="primaryButton" onClick={() => void onSave()} disabled={saving || loading || !walletAddress}>
+              {saving ? 'Saving...' : 'Save Profile'}
+            </button>
+            <button type="button" className="secondaryButton" onClick={onDisconnect} disabled={!walletAddress}>
+              Logout
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function ToastStack(props: { toasts: Toast[] }) {
+  const { toasts } = props
+  return (
+    <div className="toastStack" aria-live="polite" aria-atomic="true">
+      {toasts.map((toast) => (
+        <div key={toast.id} className={`toast ${toast.tone}`}>
+          <strong>{toastToneLabel(toast.tone)}</strong>
+          <span>{toast.title}</span>
+          {toast.detail ? <small>{toast.detail}</small> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function BlockchainBackdrop() {
+  return (
+    <svg className="blockchainBackdrop" viewBox="0 0 640 440" aria-hidden="true">
+      <defs>
+        <linearGradient id="bdvsGlow" x1="0%" x2="100%" y1="0%" y2="100%">
+          <stop offset="0%" stopColor="#32d6c8" stopOpacity="0.9" />
+          <stop offset="100%" stopColor="#6af2ff" stopOpacity="0.2" />
+        </linearGradient>
+      </defs>
+      <g className="backdropLines">
+        <path d="M76 92 L170 142 L252 104 L334 168 L420 124 L520 180" />
+        <path d="M102 282 L202 224 L296 276 L384 216 L470 258 L570 208" />
+        <path d="M170 142 L168 252 L252 104" />
+        <path d="M334 168 L348 268 L420 124" />
+        <path d="M252 104 L296 276 L384 216" />
+        <path d="M470 258 L520 180 L570 208" />
+      </g>
+      <g className="backdropNodes">
+        <circle cx="76" cy="92" r="8" />
+        <circle cx="170" cy="142" r="8" />
+        <circle cx="252" cy="104" r="8" />
+        <circle cx="334" cy="168" r="8" />
+        <circle cx="420" cy="124" r="8" />
+        <circle cx="520" cy="180" r="8" />
+        <circle cx="102" cy="282" r="8" />
+        <circle cx="202" cy="224" r="8" />
+        <circle cx="296" cy="276" r="8" />
+        <circle cx="384" cy="216" r="8" />
+        <circle cx="470" cy="258" r="8" />
+        <circle cx="570" cy="208" r="8" />
+        <circle cx="168" cy="252" r="8" />
+        <circle cx="348" cy="268" r="8" />
+      </g>
+    </svg>
   )
 }
 

@@ -24,7 +24,8 @@ import { config } from "./config.js";
 import { makeChainClient, hashFileKeccak256 } from "./chain.js";
 import { pickIpfsUploader } from "./ipfs.js";
 import { encryptFile, decryptFile } from "./fileCrypto.js";
-import { getDocument, putDocument } from "./documentStore.js";
+import { getDocument, listDocuments, putDocument } from "./documentStore.js";
+import { createDefaultProfile, getProfile, putProfile } from "./profileStore.js";
 import { getMasterKeyFromEnv, unwrapSecret, wrapSecret } from "./secretBox.js";
 
 // Create Express application instance
@@ -134,6 +135,70 @@ function normalizeOnchainProof(hash, proof, revoked, dbDoc) {
   };
 }
 
+function shortHash(hash) {
+  if (typeof hash !== "string") return "document";
+  return hash.length > 16 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
+}
+
+async function summarizeAccessibleDocuments(walletAddress) {
+  const lowerWallet = String(walletAddress).toLowerCase();
+  const documents = await listDocuments();
+
+  const summaries = await Promise.all(
+    documents.map(async (dbDoc) => {
+      const hash = dbDoc?.hash;
+      if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
+        return null;
+      }
+
+      const ownerFromDb = dbDoc.owner ?? null;
+      const ownerMatches = ownerFromDb && String(ownerFromDb).toLowerCase() === lowerWallet;
+
+      const [proof, revoked, canView] = await Promise.all([
+        chain.getRegistrationProof(hash).catch(() => null),
+        chain.isDocumentRevoked(hash).catch(() => null),
+        chain.canViewDocument(hash, walletAddress).catch(() => null),
+      ]);
+
+      const chainUnavailable = proof === null && revoked === null && canView === null;
+      const allowed = chainUnavailable ? ownerMatches : Boolean(canView) || ownerMatches;
+      if (!allowed) {
+        return null;
+      }
+
+      const isRevoked = revoked === true;
+      if (isRevoked) {
+        return null;
+      }
+
+      const owner = proof?.owner ?? ownerFromDb;
+      const createdAt = proof?.createdAt ?? dbDoc.createdAt ?? null;
+      const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
+
+      return {
+        hash,
+        name: dbDoc.file?.name ?? `Document ${shortHash(hash)}`,
+        owner,
+        createdAt: createdAt != null ? Number(createdAt) : null,
+        verified: !!proof,
+        status: "Registered",
+        cid: dbDoc.ipfs?.cid ?? null,
+        access,
+      };
+    }),
+  );
+
+  const active = summaries.filter(Boolean);
+  const owned = active
+    .filter((doc) => doc.access === "owned")
+    .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
+  const shared = active
+    .filter((doc) => doc.access === "shared")
+    .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
+
+  return { owned, shared };
+}
+
 async function buildVerificationResponse(hash) {
   const [existsOnChain, revoked, proof, dbDoc] = await Promise.all([
     chain.documentExists(hash).catch(() => false),
@@ -217,6 +282,89 @@ app.get("/api/health", async (_req, res) => {
     address: chain.wallet.address,
     ipfsGatewayBaseUrl: config.ipfsGatewayBaseUrl,
   });
+});
+
+/**
+ * GET /api/profile - Fetch the current user's profile
+ */
+app.get("/api/profile", async (req, res) => {
+  try {
+    const address = requireRequesterAddress(req, res, "profile owner");
+    if (!address) return;
+
+    const profile = (await getProfile(address)) ?? createDefaultProfile(address);
+    return res.json({ profile });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/profile GET error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * PUT /api/profile - Save the current user's profile
+ */
+app.put("/api/profile", async (req, res) => {
+  try {
+    const address = requireRequesterAddress(req, res, "profile owner");
+    if (!address) return;
+
+    const body = req.body ?? {};
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim() : "";
+    const bio = typeof body.bio === "string" ? body.bio.trim() : "";
+    const photoDataUrl = typeof body.photoDataUrl === "string" && body.photoDataUrl.trim().length > 0 ? body.photoDataUrl.trim() : null;
+    const preferredTheme = body.preferredTheme === "light" ? "light" : "dark";
+
+    if (name.length === 0 || name.length > 80) {
+      return res.status(400).json({ error: "Profile name must be between 1 and 80 characters" });
+    }
+    if (title.length > 80) {
+      return res.status(400).json({ error: "Profile title must be 80 characters or less" });
+    }
+    if (email.length > 120) {
+      return res.status(400).json({ error: "Email must be 120 characters or less" });
+    }
+    if (bio.length > 280) {
+      return res.status(400).json({ error: "Bio must be 280 characters or less" });
+    }
+
+    const profile = await putProfile(address, {
+      name,
+      title,
+      email,
+      bio,
+      photoDataUrl,
+      preferredTheme,
+    });
+
+    return res.json({ profile });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/profile PUT error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/documents - Return the caller's real owned and shared documents
+ */
+app.get("/api/documents", async (req, res) => {
+  try {
+    const address = requireRequesterAddress(req, res, "document owner");
+    if (!address) return;
+
+    const documents = await summarizeAccessibleDocuments(address);
+    return res.json(documents);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/documents GET error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
 });
 
 /**
