@@ -2,7 +2,7 @@ import './App.css'
 import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
-import { fetchDocuments, fetchProfile, postFileWithProgress, saveProfile, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
+import { fetchDocuments, fetchProfile, postFileWithProgress, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -54,7 +54,7 @@ type ShareDialogState = {
 }
 
 
-function createFallbackProfile(address: string | null, preferredTheme: ThemeMode = 'dark'): ProfileState {
+function createFallbackProfile(address: string | null, preferredTheme: ThemeMode = 'light'): ProfileState {
   return {
     address: address ?? '',
     name: 'My Profile',
@@ -68,9 +68,9 @@ function createFallbackProfile(address: string | null, preferredTheme: ThemeMode
 }
 
 function readTheme(): ThemeMode {
-  if (typeof window === 'undefined') return 'dark'
+  if (typeof window === 'undefined') return 'light'
   const value = window.localStorage.getItem(THEME_STORAGE_KEY)
-  return value === 'light' ? 'light' : 'dark'
+  return value === 'dark' ? 'dark' : 'light'
 }
 
 function shortAddr(addr: string | null | undefined) {
@@ -251,6 +251,7 @@ function App() {
         setActivePage('home')
         setDashboardDocs([])
         setSharedDocs([])
+        setProfile(null)
         return
       }
       void syncWalletContext(accounts[0])
@@ -272,7 +273,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!walletAddress || activePage !== 'dashboard') {
+    if (!walletAddress || (activePage !== 'dashboard' && activePage !== 'shared')) {
       return
     }
     void refreshDashboardDocs()
@@ -390,7 +391,19 @@ function App() {
     }
   }
 
-  function disconnectWallet() {
+  async function disconnectWallet() {
+    const ethereum = window.ethereum
+    if (ethereum?.request) {
+      try {
+        await ethereum.request({
+          method: 'wallet_revokePermissions',
+          params: [{ eth_accounts: {} }],
+        })
+      } catch {
+        // Some wallets do not support permission revocation; local logout still works.
+      }
+    }
+
     setWalletAddress(null)
     setChainId(null)
     setBalance(null)
@@ -399,6 +412,13 @@ function App() {
     setProfile(null)
     setActivePage('home')
     pushToast('Wallet context cleared', 'The app is back in guest mode.', 'info')
+  }
+
+  function handleReconnect() {
+    if (walletAddress) {
+      return
+    }
+    void connectWallet()
   }
 
   async function saveProfileDraft() {
@@ -428,26 +448,18 @@ function App() {
   }
 
   async function verifyFile(file: File) {
-    const ethereum = window.ethereum
-    if (!ethereum) {
-      pushToast('Verify failed', 'MetaMask or another EVM wallet is required for chain reads.', 'error')
-      return
-    }
     setVerifyBusy(true)
     try {
       const hash = await extractHash(file)
-      const address = await ensureContractAddress()
-      const provider = new ethers.BrowserProvider(ethereum)
-      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, provider)
-      const verified = Boolean(await contract.verifyDocument(hash))
+      const response = await verifyHash(hash, walletAddress ?? undefined)
       setVerifyPreview({
-        hash,
-        verified,
-        revoked: false,
-        existsOnChain: verified,
-        note: verified ? 'Verified on-chain' : 'No on-chain registration found',
+        hash: response.hash,
+        verified: !!response.verified,
+        revoked: !!response.revoked,
+        existsOnChain: !!response.existsOnChain,
+        note: response.verified ? 'Verified on-chain' : 'No on-chain registration found',
       })
-      pushToast(verified ? 'Document verified' : 'Document not found', shortHash(hash), verified ? 'success' : 'warning')
+      pushToast(response.verified ? 'Document verified' : 'Document not found', shortHash(hash), response.verified ? 'success' : 'warning')
     } catch (error) {
       pushToast('Verify failed', error instanceof Error ? error.message : String(error), 'error')
     } finally {
@@ -529,7 +541,19 @@ function App() {
       pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')
       await tx.wait()
       setUploadMessage('Document anchored on-chain.')
-      pushToast('Registration confirmed', shortHash(hash), 'success')
+      // Query backend for canonical verification response so UI shows the same
+      // verification output as backend (includes database info and timestamps).
+      try {
+        const verified = await verifyHash(hash, walletAddress ?? undefined)
+        pushToast('Registration confirmed', shortHash(hash), 'success')
+        if (verified.onChain && verified.onChain.createdAt) {
+          setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}`)
+        }
+      } catch (e) {
+        // Non-fatal: still refresh documents if backend verify fails temporarily
+        // eslint-disable-next-line no-console
+        console.warn('Post-register verify failed', e)
+      }
       setActivePage('dashboard')
       await refreshDashboardDocs()
     } catch (error) {
@@ -647,6 +671,7 @@ function App() {
         contractAddress={contractAddress}
         onDisconnect={disconnectWallet}
         onNavChange={setActivePage}
+          onReconnect={handleReconnect}
         onVerifyDrop={handleGlobalVerifyDrop}
         onVerifyInputClick={() => verifyInputRef.current?.click()}
         onVerifyInputSelected={handleGlobalVerifyDrop}
@@ -778,6 +803,7 @@ function Header(props: {
   chainId: number | null
   contractAddress: string | null
   onDisconnect: () => void
+  onReconnect: () => void
   onNavChange: (page: PageId) => void
   onVerifyDrop: (file: File) => Promise<void>
   onVerifyInputClick: () => void
@@ -795,6 +821,7 @@ function Header(props: {
     chainId,
     contractAddress,
     onDisconnect,
+    onReconnect,
     onNavChange,
     verifyPreview,
     walletAddress,
@@ -844,7 +871,13 @@ function Header(props: {
           ))}
         </nav>
 
-        <div className="navActions" />
+        <div className="navActions">
+          {!walletAddress ? (
+            <button type="button" className="primaryButton" onClick={onReconnect}>
+              Connect Wallet
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="container verifyResultRow">
@@ -1200,9 +1233,7 @@ function SharedPage(props: { docs: DocumentSummary[]; onDownload: (hash: string,
                 <div className="sharedName">{doc.name}</div>
                 <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
               </div>
-              <button type="button" className="statusPillButton" onClick={() => void copyText(doc.hash)}>
-                {shortHash(doc.hash)}
-              </button>
+              <div className="statusPillText">{shortHash(doc.hash)}</div>
             </div>
             <div className="sharedMetaRow">
               <span>Recorded {formatUnixSeconds(doc.createdAt ? Math.floor(doc.createdAt / 1000) : null)}</span>

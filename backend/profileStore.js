@@ -85,7 +85,7 @@ export function createDefaultProfile(address) {
     email: "",
     bio: "",
     photoDataUrl: null,
-    preferredTheme: "dark",
+    preferredTheme: "light",
     updatedAt: null,
   };
 }

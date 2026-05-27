@@ -233,3 +233,13 @@ export async function fetchDocuments(walletAddress: string): Promise<DocumentCol
     },
   })
 }
+
+export async function verifyHash(hash: string, walletAddress?: string): Promise<VerifyResponse> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (walletAddress) headers['x-wallet-address'] = walletAddress
+  return requestJson<VerifyResponse>('/api/verify-hash', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ hash }),
+  })
+}

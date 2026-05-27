@@ -40,273 +40,91 @@ This system verifies document authenticity using a cryptographic hash stored on 
 - Crypto (Node built-in `crypto`)
 
 **Frontend**
-- React + TypeScript
-- Vite
-- MetaMask (wallet connection + signing/transactions)
+# Blockchain Document Verification System
 
----
+Lightweight project to register document integrity proofs on-chain while storing encrypted file contents off-chain (IPFS). The backend manages encryption keys and enforces download authorization.
 
-## 4) System Architecture
+## Quick Links
+- Contract: [contracts/DocumentRegistry.sol](contracts/DocumentRegistry.sol)
+- Backend entry: [backend/server.js](backend/server.js)
+- Frontend (Vite): [frontend/src/App.tsx](frontend/src/App.tsx)
+- Demo script: [scripts/demo.js](scripts/demo.js)
 
-### 4.1 High-level diagram
+## Quick Start
 
-```text
-User (Browser + MetaMask)
-				|
-				| 1) Upload file (HTTP)
-				v
-Frontend (React)
-				|
-				| 2) POST /api/upload (file + x-wallet-address)
-				v
-Backend (Express)
-	 - hashes file
-	 - encrypts bytes
-	 - uploads encrypted bytes to IPFS
-	 - stores CID + key/IV server-side
-				|
-				| 3) Frontend asks user to confirm tx
-				v
-Blockchain (DocumentRegistry)
-	 - stores ONLY the document hash
-	 - manages revoke + view permissions
+Prerequisites: Node.js v18+, npm, MetaMask (for UI interactions).
 
-Later (download)
-Frontend -> Backend -> IPFS (fetch encrypted) -> Backend decrypt -> Browser download
+1. Install dependencies (root, backend, frontend):
+
+```bash
+npm install
+npm --prefix backend install
+npm --prefix frontend install
 ```
 
-### 4.2 What goes where
+2. Run Hardhat local node (optional):
 
-| Item | Stored On-Chain? | Stored In IPFS? | Stored Server-Side? | Sent to Frontend? |
-|------|------------------|-----------------|---------------------|-------------------|
-| Document hash (keccak256) | ✅ Yes | ❌ No | optional/cache | ✅ Yes |
-| File content (plaintext) | ❌ No | ❌ No | ❌ No | ✅ (only after authorized download) |
-| File content (encrypted) | ❌ No | ✅ Yes | ❌ No | ❌ No |
-| CID | ❌ No | (content addressed) | ✅ Yes | ❌ No |
-| Encryption key + IV | ❌ No | ❌ No | ✅ Yes | ❌ No |
-
----
-
-## 5) Security & Encryption Model
-
-### 5.1 File encryption
-
-- Cipher: **AES-256-CBC**
-- Per document:
-	- Random 32-byte key
-	- Random 16-byte IV
-- Encryption occurs **in the backend before uploading to IPFS**.
-
-### 5.2 Key custody
-
-- The backend stores encryption material (key + IV) linked to the **owner wallet address**.
-- Keys are never returned to the browser.
-- Optional at-rest protection: if `FILE_MASTER_KEY` is configured, the backend wraps (encrypts) the stored per-document secrets using **AES-256-GCM**.
-
-### 5.3 Authorization
-
-The backend download endpoint checks access using the smart contract’s permissions:
-- **Owner can always download their own document.**
-- Shared viewers can download if the smart contract grants them access.
-
----
-
-## 6) Repository Structure
-
-```text
-contracts/                 Solidity smart contract
-scripts/                   Hardhat deploy/demo scripts
-backend/                   Express API (upload/verify/download)
-	server.js
-	chain.js
-	ipfs.js
-	fileCrypto.js
-	documentStore.js         Lightweight JSON store (server-side)
-	data/documents.json
-frontend/                  React app (Vite)
-	src/App.tsx
-	src/api.ts
+```bash
+npx hardhat node
 ```
 
----
+3. Compile & deploy contracts (example to local node):
 
-## 7) Setup & Installation
-
-### 7.1 Prerequisites
-
-- Node.js (recommended: v18+)
-- MetaMask extension
-- An IPFS provider credential (Pinata or Web3.Storage) OR run with `IPFS_DISABLED=true` for local testing.
-
-### 7.2 Install dependencies
-
-Install Node.js dependencies for both the root project and the frontend application.
-
-### 7.3 Configure backend environment
-
-Create `backend/.env` (copy values from `backend/env.example`) and set network + IPFS credentials.
-
-Edit `backend/.env`:
-- `RPC_URL` (Hardhat local default is `http://127.0.0.1:8545`)
-- `PRIVATE_KEY` (funded account for selected network)
-- `CONTRACT_ADDRESS` (set after deploying the contract)
-- IPFS credentials:
-	- `PINATA_JWT` **or** `WEB3_STORAGE_TOKEN`
-- Optional:
-	- `FILE_MASTER_KEY` (recommended for production)
-	- `PORT` (default 8080)
-
----
-
-## 8) Deployment & Operation (Summary)
-
-This system runs as three cooperating components:
-
-1. **Blockchain network + deployed contract**
-	- A network is selected (local Hardhat or a public testnet).
-	- The `DocumentRegistry` contract is deployed once per network.
-	- The deployed contract address is configured in `backend/.env` as `CONTRACT_ADDRESS`.
-
-2. **Backend API (Express)**
-	- Provides upload, verification, and authorized download endpoints.
-	- Encrypts files before IPFS upload and stores encryption material server-side.
-	- Common operational issue: port conflicts. If the default port is already in use, update `PORT` in `backend/.env`.
-
-3. **Frontend (React + Vite)**
-	- Provides the user interface.
-	- Uses MetaMask for wallet connection and transaction confirmation.
-
----
-
-## 9) Website Workflow (Detailed)
-
-This section describes the user-facing workflow and the internal system actions for the two main features:
-
-1) **Registration (upload + on-chain hash)**
-2) **Sharing (grant/revoke viewer access)**
-
-### 9.1 Roles and assumptions
-
-- **Owner:** the wallet address that registers the document hash on-chain.
-- **Viewer:** a wallet address that receives permission to download/view a document.
-- **MetaMask:** used for wallet connection and signing/confirming transactions.
-- **Important design rule:** the contract stores **only the document hash**. The CID and encryption keys remain off-chain.
-
-### 9.2 Registration workflow (Upload → Encrypt → IPFS → Register on-chain)
-
-#### A) User steps (what the owner does)
-
-1. Connect the wallet in MetaMask.
-2. Select a document file in **Upload Document**.
-3. Click **Upload**.
-4. When prompted, **accept the transaction in MetaMask**.
-5. After confirmation, the document appears in **My Documents**.
-
-#### B) System steps (what happens inside the system)
-
-The registration pipeline is intentionally split into two phases: **off-chain storage** and **on-chain proof**.
-
-**Phase 1 — Off-chain (Backend + IPFS):**
-
-1. Frontend sends the selected file to the backend endpoint `POST /api/upload` with header `x-wallet-address`.
-2. Backend computes the document hash (keccak256) from the raw bytes.
-3. Backend encrypts the file bytes using **AES-256-CBC** with a fresh random key and IV.
-4. Backend uploads the encrypted bytes to IPFS (Pinata/Web3.Storage), receiving a CID.
-5. Backend stores the following server-side (not sent to the browser):
-	- `CID`
-	- encryption key + IV
-	- file metadata (name, type, size)
-	- owner wallet address
-
-**Phase 2 — On-chain (MetaMask + Smart contract):**
-
-6. Frontend requests MetaMask to create a blockchain transaction calling `registerDocument(hash, cid)`.
-7. The frontend passes an empty CID value (`""`) so that **CID is not stored on-chain**.
-8. MetaMask prompts the user to confirm the transaction (gas fees apply on public networks).
-9. After confirmation, the contract permanently records the document hash, forming an immutable proof of registration.
-
-**Registration sequence (summary):**
-
-```text
-Owner -> Frontend -> Backend: upload file
-Backend: hash + encrypt -> IPFS: store encrypted bytes -> Backend: store CID + key/IV
-Frontend -> MetaMask -> Contract: registerDocument(hash, "")
+```bash
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network localhost
 ```
 
-#### C) Output of registration
+4. Configure backend: copy `backend/env.example` to `backend/.env` and set `RPC_URL`, `PRIVATE_KEY`, and `CONTRACT_ADDRESS` (set by deploy step). If you use Pinata or Web3.Storage, set `PINATA_JWT` or `WEB3_STORAGE_TOKEN`.
 
-- **On-chain:** document hash is registered.
-- **Off-chain:** encrypted file exists in IPFS; backend retains CID and key/IV.
-- **UI:** success message and the hash shown under **My Documents**.
+5. Start backend and frontend:
 
-#### D) Common failure cases (registration)
-
-- MetaMask rejected transaction → the upload may be stored off-chain but not registered on-chain.
-- Wrong network in MetaMask → registration fails until the network matches the selected RPC network.
-- Missing IPFS credentials → upload fails unless `IPFS_DISABLED=true` is used for local/demo mode.
-
-### 9.3 Sharing workflow (Grant / Revoke viewer access)
-
-Sharing is enforced by the smart contract for access decisions, and by the backend at download time.
-
-#### A) User steps (what the owner does)
-
-1. Open **My Documents** and locate the document hash.
-2. Enter a viewer wallet address in the share input field.
-3. Click **Grant** to give access.
-4. To remove access later, enter the viewer address again and click **Revoke**.
-
-#### B) System steps (what happens inside the system)
-
-1. Frontend requests MetaMask to submit a transaction to the contract:
-	- **Grant:** stores permission that the viewer can access the hash (or root hash).
-	- **Revoke:** removes that permission.
-2. After confirmation, the blockchain emits access control events (grant/revoke).
-3. When a viewer attempts to download:
-	- Viewer calls the backend download endpoint with `x-wallet-address`.
-	- Backend checks permission using the contract (e.g., `canViewDocument(hash, viewer)`).
-	- If allowed, backend fetches the encrypted file by CID from IPFS, decrypts, and returns the original bytes.
-
-**Sharing + download sequence (summary):**
-
-```text
-Owner -> MetaMask -> Contract: grant/revoke access
-
-Viewer -> Frontend -> Backend: GET /api/documents/:hash/download (viewer address)
-Backend -> Contract: canViewDocument(hash, viewer)
-Backend -> IPFS: fetch encrypted bytes
-Backend: decrypt -> Viewer: file download
+```bash
+node backend/server.js
+npm --prefix frontend run dev
 ```
 
-#### C) Notes on CID visibility
+6. Run demo (optional):
 
-- CID may be displayed as “kept off-chain”. This is expected.
-- Downloads do not require CID in the UI because the backend fetches by CID from its own server-side storage.
+```bash
+node scripts/demo.js
+```
 
-### 9.4 Owner download workflow
+## What it does
+- Uploads files via the backend, which computes a keccak256 hash of the raw bytes.
+- Backend encrypts file bytes (AES-256-CBC) and uploads the encrypted blob to IPFS.
+- Only the document hash is registered on-chain; CIDs and encryption keys remain off-chain.
+- Download requests are authorized by querying the contract for view permissions; backend decrypts and streams files to authorized wallets.
 
-- The owner can download their own documents from **My Documents** using **Download**.
-- The backend always allows the stored owner address to download their own document.
+## Project Layout
 
-### 9.5 Verification workflow (Integrity check)
+- [contracts/](contracts/) — Solidity contract(s).
+- [scripts/](scripts/) — Hardhat deploy/demo scripts.
+- [backend/](backend/) — Express API: upload, verify, download; see [backend/server.js](backend/server.js).
+- [frontend/](frontend/) — React + Vite UI.
 
-Verification checks whether the file’s computed hash exists on-chain.
+## Backend environment notes
 
-1. User selects a file in the **Verify** section.
-2. Backend computes the hash and calls the contract read method to check existence.
-3. UI reports whether the document is registered.
+- Copy `backend/env.example` to `backend/.env` and set values.
+- Useful variables: `RPC_URL`, `PRIVATE_KEY`, `CONTRACT_ADDRESS`, `PINATA_JWT` or `WEB3_STORAGE_TOKEN`, `FILE_MASTER_KEY` (optional wrap key), `PORT`.
 
-### 9.6 Revocation workflow (Invalidating versions)
+## Common commands
 
-- Revocation marks a document version (or a root) as revoked on-chain.
-- The UI labels revoked versions as **Revoked**.
-- Access checks can be configured to block revoked versions for viewers; the backend enforces authorization and download policy.
+- Install all deps: `npm install && npm --prefix backend install && npm --prefix frontend install`
+- Start backend: `node backend/server.js`
+- Start frontend (dev): `npm --prefix frontend run dev`
+- Compile contracts: `npx hardhat compile`
+- Deploy to local: `npx hardhat run scripts/deploy.js --network localhost`
 
----
+## Troubleshooting
 
-## 10) API Documentation (Backend)
+- If backend port is in use, change `PORT` in `backend/.env`.
+- If MetaMask shows wrong network, make sure `RPC_URL` and chain id match your wallet.
+- If uploads fail, verify IPFS credentials or run with `IPFS_DISABLED=true` for local testing.
 
-Base URL (local): `http://localhost:8080`
+## Next steps
+
+- Want me to: run the demo, deploy contracts to a testnet, or add a concise developer README for `backend/` and `frontend/`? Reply with which you'd like next.
 
 ### 10.1 Health
 

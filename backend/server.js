@@ -154,10 +154,11 @@ async function summarizeAccessibleDocuments(walletAddress) {
       const ownerFromDb = dbDoc.owner ?? null;
       const ownerMatches = ownerFromDb && String(ownerFromDb).toLowerCase() === lowerWallet;
 
-      const [proof, revoked, canView] = await Promise.all([
+      const [proof, revoked, canView, verifiedOnChain] = await Promise.all([
         chain.getRegistrationProof(hash).catch(() => null),
         chain.isDocumentRevoked(hash).catch(() => null),
         chain.canViewDocument(hash, walletAddress).catch(() => null),
+        chain.verifyDocumentHash(hash).catch(() => null),
       ]);
 
       const chainUnavailable = proof === null && revoked === null && canView === null;
@@ -167,9 +168,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
       }
 
       const isRevoked = revoked === true;
-      if (isRevoked) {
-        return null;
-      }
+      if (isRevoked) return null;
 
       const owner = proof?.owner ?? ownerFromDb;
       const createdAt = proof?.createdAt ?? dbDoc.createdAt ?? null;
@@ -180,7 +179,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
         name: dbDoc.file?.name ?? `Document ${shortHash(hash)}`,
         owner,
         createdAt: createdAt != null ? Number(createdAt) : null,
-        verified: !!proof,
+        verified: !!verifiedOnChain,
         status: "Registered",
         cid: dbDoc.ipfs?.cid ?? null,
         access,
@@ -200,17 +199,24 @@ async function summarizeAccessibleDocuments(walletAddress) {
 }
 
 async function buildVerificationResponse(hash) {
-  const [existsOnChain, revoked, proof, dbDoc] = await Promise.all([
+  const [existsOnChain, revoked, proof, dbDoc, verifiedOnChain] = await Promise.all([
     chain.documentExists(hash).catch(() => false),
     chain.isDocumentRevoked(hash).catch(() => false),
     chain.getRegistrationProof(hash).catch(() => null),
     getDocument(hash).catch(() => null),
+    chain.verifyDocumentHash(hash).catch(() => false),
   ]);
 
   return {
     hash,
     existsOnChain,
-    verified: existsOnChain && !revoked,
+    // `verified` reflects the contract's `verifyDocument` result (exists && not revoked)
+    verified: !!verifiedOnChain,
+    // When verified, include an approximate timestamp for when the hash was recorded
+    verifiedAt: verifiedOnChain ? (proof?.createdAt ?? (dbDoc?.createdAt ? Math.floor(dbDoc.createdAt / 1000) : Math.floor(Date.now() / 1000))) : null,
+    verifiedMessage: verifiedOnChain
+      ? `Hash verified around ${new Date((proof?.createdAt ?? (dbDoc?.createdAt ? Math.floor(dbDoc.createdAt / 1000) : Math.floor(Date.now() / 1000))) * 1000).toISOString()}`
+      : null,
     revoked,
     onChain: proof
       ? {
@@ -584,9 +590,9 @@ app.post("/api/upload", upload.single("file"), handleUpload);    // Current name
  */
 app.post("/api/verify", upload.single("file"), async (req, res) => {
   try {
-    const requesterAddress = requireRequesterAddress(req, res, "requester");
-    if (!requesterAddress) return;
-
+    // Allow public verification without requiring a wallet header. The backend
+    // performs on-chain reads using its own provider, so callers do not need
+    // to be a connected wallet. Keep previous behavior of returning source info.
     if (!req.file) {
       return res.status(400).json({ error: "Missing file (field name: file)" });
     }
@@ -620,9 +626,7 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
  */
 app.post("/api/verify-hash", async (req, res) => {
   try {
-    const requesterAddress = requireRequesterAddress(req, res, "requester");
-    if (!requesterAddress) return;
-
+    // Allow public verification by hash. No x-wallet-address header required.
     const { hash } = req.body ?? {};
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
@@ -708,6 +712,7 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes);
     const downloadedHash = hashFileKeccak256(plaintext);
     const existsOnChain = await chain.documentExists(downloadedHash);
+    const verifiedOnChain = await chain.verifyDocumentHash(downloadedHash).catch(() => false);
     if (!existsOnChain) {
       return res.status(412).json({
         error: "Document integrity check failed: downloaded file hash not found on blockchain",
@@ -716,7 +721,7 @@ app.get("/api/documents/:hash/download", async (req, res) => {
 
     let onchain = null;
     try {
-      onchain = await chain.getRegistrationProof(downloadedHash); 
+      onchain = await chain.getRegistrationProof(downloadedHash);
     } catch {
       onchain = null;
     }
@@ -731,6 +736,12 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     res.setHeader("X-Document-Integrity-Message", "Document integrity verified: record found on blockchain");
     if (onchain && onchain.owner) res.setHeader("X-Document-Owner", String(onchain.owner));
     if (onchain && onchain.createdAt) res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
+    // Add verified timestamp/message header (human-readable) without exposing hash
+    if (verifiedOnChain) {
+      const verifiedAt = onchain?.createdAt ?? Math.floor(Date.now() / 1000);
+      res.setHeader("X-Document-Verified-At", String(verifiedAt));
+      res.setHeader("X-Document-Verified-Message", `Hash verified around ${new Date(verifiedAt * 1000).toISOString()}`);
+    }
     if (onchain && onchain.blockNumber != null) res.setHeader("X-Document-Block-Number", String(onchain.blockNumber));
     if (config.contractAddress) res.setHeader("X-Document-Contract", String(config.contractAddress));
 
