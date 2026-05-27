@@ -128,9 +128,6 @@ function normalizeOnchainProof(hash, proof, revoked, dbDoc) {
       : null,
     database: dbDoc
       ? {
-          owner: dbDoc.owner ?? null,
-          createdAt: dbDoc.createdAt != null ? Number(dbDoc.createdAt) : null,
-          file: dbDoc.file ?? null,
           ipfs: dbDoc.ipfs ?? null,
           encryption: dbDoc.encryption ? { enabled: true } : null,
         }
@@ -154,9 +151,6 @@ async function summarizeAccessibleDocuments(walletAddress) {
         return null;
       }
 
-      const ownerFromDb = dbDoc.owner ?? null;
-      const ownerMatches = ownerFromDb && String(ownerFromDb).toLowerCase() === lowerWallet;
-
       const [proof, revoked, canView, verifiedOnChain] = await Promise.all([
         chain.getRegistrationProof(hash).catch(() => null),
         chain.isDocumentRevoked(hash).catch(() => null),
@@ -165,7 +159,8 @@ async function summarizeAccessibleDocuments(walletAddress) {
       ]);
 
       const chainUnavailable = proof === null && revoked === null && canView === null;
-      const allowed = chainUnavailable ? ownerMatches : Boolean(canView) || ownerMatches;
+      const ownerMatches = proof?.owner && String(proof.owner).toLowerCase() === lowerWallet;
+      const allowed = chainUnavailable ? !!ownerMatches : Boolean(canView) || !!ownerMatches;
       if (!allowed) {
         return null;
       }
@@ -173,13 +168,13 @@ async function summarizeAccessibleDocuments(walletAddress) {
       const isRevoked = revoked === true;
       if (isRevoked) return null;
 
-      const owner = proof?.owner ?? ownerFromDb;
-      const createdAt = proof?.createdAt ?? dbDoc.createdAt ?? null;
+      const owner = proof?.owner ?? null;
+      const createdAt = proof?.createdAt ?? null;
       const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
 
       return {
         hash,
-        name: dbDoc.file?.name ?? `Document ${shortHash(hash)}`,
+        name: `Document ${shortHash(hash)}`,
         owner,
         createdAt: createdAt != null ? Number(createdAt) : null,
         verified: !!verifiedOnChain,
@@ -202,11 +197,10 @@ async function summarizeAccessibleDocuments(walletAddress) {
 }
 
 async function buildVerificationResponse(hash) {
-  const [existsOnChain, revoked, proof, dbDoc, verifiedOnChain] = await Promise.all([
+  const [existsOnChain, revoked, proof, verifiedOnChain] = await Promise.all([
     chain.documentExists(hash).catch(() => false),
     chain.isDocumentRevoked(hash).catch(() => false),
     chain.getRegistrationProof(hash).catch(() => null),
-    getDocument(hash).catch(() => null),
     chain.verifyDocumentHash(hash).catch(() => false),
   ]);
 
@@ -228,15 +222,7 @@ async function buildVerificationResponse(hash) {
           blockNumber: proof.blockNumber != null ? Number(proof.blockNumber) : null,
         }
       : null,
-    database: dbDoc
-      ? {
-          owner: dbDoc.owner ?? null,
-          createdAt: dbDoc.createdAt != null ? Number(dbDoc.createdAt) : null,
-          file: dbDoc.file ?? null,
-          ipfs: dbDoc.ipfs ?? null,
-          encryption: dbDoc.encryption ? { enabled: true } : null,
-        }
-      : null,
+    database: null,
   };
 }
 
@@ -466,25 +452,19 @@ async function handleUpload(req, res) {
 
         await putDocument(hash, {
           hash,
-          owner: ownerAddress,
           ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
-          file: fileMeta,
           encryption: {
             alg: "aes-256-cbc",
             key: keyRecord,
             iv: ivRecord,
             wrapped: !!masterKey,
           },
-          createdAt: Date.now(),
         });
 
         dbDoc = {
           hash,
-          owner: ownerAddress,
           ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
-          file: fileMeta,
           encryption: { alg: "aes-256-cbc", wrapped: !!masterKey },
-          createdAt: Date.now(),
         };
       }
 
@@ -527,16 +507,13 @@ async function handleUpload(req, res) {
 
     await putDocument(hash, {
       hash,
-      owner: ownerAddress,
       ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
-      file: fileMeta,
       encryption: {
         alg: "aes-256-cbc",
         key: keyRecord,
         iv: ivRecord,
         wrapped: !!masterKey,
       },
-      createdAt: Date.now(),
     });
 
     return res.json({

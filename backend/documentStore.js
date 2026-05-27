@@ -1,6 +1,4 @@
 import { MongoClient } from "mongodb";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 
 // If MONGODB_URI is not set, fail fast — we require MongoDB for persistence.
@@ -60,7 +58,12 @@ export async function putDocument(hash, doc) {
   }
 
   const collection = await getCollection();
-  await collection.updateOne({ _id: hash }, { $set: { ...doc, _id: hash } }, { upsert: true });
+  const sanitized = {
+    _id: hash,
+    ipfs: doc?.ipfs ? { cid: doc.ipfs.cid ?? null, provider: doc.ipfs.provider ?? null } : null,
+    encryption: doc?.encryption ? doc.encryption : null,
+  };
+  await collection.updateOne({ _id: hash }, { $set: sanitized }, { upsert: true });
 }
 
 export async function getDocument(hash) {
