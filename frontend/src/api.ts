@@ -206,7 +206,7 @@ export async function fetchProfile(walletAddress: string): Promise<{ profile: Us
   return requestJson<{ profile: UserProfile }>('/api/profile', {
     method: 'GET',
     headers: {
-      'x-wallet-address': walletAddress,
+      'wallet-address': walletAddress,
     },
   })
 }
@@ -219,7 +219,7 @@ export async function saveProfile(
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      'x-wallet-address': walletAddress,
+      'wallet-address': walletAddress,
     },
     body: JSON.stringify(profile),
   })
@@ -229,14 +229,14 @@ export async function fetchDocuments(walletAddress: string): Promise<DocumentCol
   return requestJson<DocumentCollections>('/api/documents', {
     method: 'GET',
     headers: {
-      'x-wallet-address': walletAddress,
+      'wallet-address': walletAddress,
     },
   })
 }
 
 export async function verifyHash(hash: string, walletAddress?: string): Promise<VerifyResponse> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (walletAddress) headers['x-wallet-address'] = walletAddress
+  if (walletAddress) headers['wallet-address'] = walletAddress
   return requestJson<VerifyResponse>('/api/verify-hash', {
     method: 'POST',
     headers,

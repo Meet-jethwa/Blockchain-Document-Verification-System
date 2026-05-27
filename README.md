@@ -136,7 +136,7 @@ node scripts/demo.js
 `POST /api/upload`
 - Content-Type: `multipart/form-data`
 - Form field: `file`
-- Required header: `x-wallet-address: 0x...`
+- Required header: `wallet-address: 0x...`
 
 Response includes:
 - `hash` (document hash to register on-chain)
@@ -154,7 +154,7 @@ Response includes:
 ### 10.4 Authorized download (server decrypt)
 
 `GET /api/documents/:hash/download`
-- Required header: `x-wallet-address: 0x...`
+- Required header: `wallet-address: 0x...`
 - Backend:
 	1) checks access
 	2) fetches encrypted bytes from IPFS using stored CID
@@ -176,7 +176,7 @@ Fix:
 ### “Not authorized to view this document”
 
 Cause:
-- Wallet address in `x-wallet-address` is not the owner and has not been granted access.
+- Wallet address in `wallet-address` is not the owner and has not been granted access.
 
 Fix:
 - Connect the correct wallet, or

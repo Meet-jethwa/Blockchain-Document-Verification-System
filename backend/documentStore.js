@@ -1,50 +1,21 @@
 import { MongoClient } from "mongodb";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { config } from "./config.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, "data");
-const STORE_PATH = path.join(DATA_DIR, "documents.json");
+// If MONGODB_URI is not set, fail fast — we require MongoDB for persistence.
+const mongoUri = config.mongodbUri;
+if (!mongoUri) {
+  throw new Error(
+    "MONGODB_URI is not configured. Set MONGODB_URI env var to a MongoDB connection string to enable persistent storage."
+  );
+}
 
-const mongoUri = process.env.MONGODB_URI?.trim();
-let mongoClient = mongoUri ? new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2500 }) : null;
+let mongoClient = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2500 });
 let mongoDb = null;
 let mongoConnectPromise = null;
-let mongoDisabled = false;
-let writeQueue = Promise.resolve();
-
-async function ensureDataDir() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-}
-
-async function loadJsonStore() {
-  await ensureDataDir();
-  try {
-    const raw = await fs.readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") throw new Error("Invalid store");
-    if (!parsed.documents || typeof parsed.documents !== "object") {
-      return { version: 1, documents: {} };
-    }
-    return { version: 1, documents: parsed.documents };
-  } catch (err) {
-    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
-      return { version: 1, documents: {} };
-    }
-    throw err;
-  }
-}
-
-async function saveJsonStore(store) {
-  await ensureDataDir();
-  const tmp = `${STORE_PATH}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(store, null, 2), "utf8");
-  await fs.rename(tmp, STORE_PATH);
-}
-
 async function ensureMongo() {
-  if (!mongoClient || mongoDisabled) return null;
+  if (!mongoClient) return null;
   if (mongoDb) return mongoDb;
   if (!mongoConnectPromise) {
     mongoConnectPromise = mongoClient
@@ -54,15 +25,15 @@ async function ensureMongo() {
         return mongoDb;
       })
       .catch((err) => {
-        mongoDisabled = true;
         mongoClient = null;
         mongoConnectPromise = null;
         mongoDb = null;
         // eslint-disable-next-line no-console
-        console.warn(
-          `[documentStore] MongoDB unavailable (${err instanceof Error ? err.message : String(err)}); falling back to JSON store.`,
+        console.error(
+          `[documentStore] MongoDB connection failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            `Ensure MONGODB_URI is correct and the database is reachable.`,
         );
-        return null;
+        throw err;
       });
   }
   return mongoConnectPromise;
@@ -70,7 +41,8 @@ async function ensureMongo() {
 
 async function getCollection() {
   const db = await ensureMongo();
-  return db ? db.collection("documents") : null;
+  if (!db) throw new Error('MongoDB not available');
+  return db.collection("documents");
 }
 
 export async function putDocument(hash, doc) {
@@ -78,23 +50,8 @@ export async function putDocument(hash, doc) {
     throw new Error("putDocument: invalid hash");
   }
 
-  writeQueue = writeQueue.then(async () => {
-    const collection = await getCollection();
-    if (collection) {
-      await collection.updateOne(
-        { _id: hash },
-        { $set: { ...doc, _id: hash } },
-        { upsert: true },
-      );
-      return;
-    }
-
-    const store = await loadJsonStore();
-    store.documents[hash] = doc;
-    await saveJsonStore(store);
-  });
-
-  await writeQueue;
+  const collection = await getCollection();
+  await collection.updateOne({ _id: hash }, { $set: { ...doc, _id: hash } }, { upsert: true });
 }
 
 export async function getDocument(hash) {
@@ -103,28 +60,15 @@ export async function getDocument(hash) {
   }
 
   const collection = await getCollection();
-  if (collection) {
-    const doc = await collection.findOne({ _id: hash }, { projection: { _id: 0 } });
-    return doc ?? null;
-  }
-
-  const store = await loadJsonStore();
-  return store.documents[hash] ?? null;
+  const doc = await collection.findOne({ _id: hash }, { projection: { _id: 0 } });
+  return doc ?? null;
 }
 
 export async function listDocuments() {
   const collection = await getCollection();
-  if (collection) {
-    const docs = await collection.find({}).toArray();
-    return docs.map((doc) => {
-      const { _id, ...rest } = doc;
-      return { hash: _id, ...rest };
-    });
-  }
-
-  const store = await loadJsonStore();
-  return Object.entries(store.documents).map(([hash, doc]) => ({
-    hash,
-    ...doc,
-  }));
+  const docs = await collection.find({}).toArray();
+  return docs.map((doc) => {
+    const { _id, ...rest } = doc;
+    return { hash: _id, ...rest };
+  });
 }

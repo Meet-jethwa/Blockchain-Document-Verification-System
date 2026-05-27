@@ -163,7 +163,7 @@ async function fetchDocumentDownload(hash: string, walletAddress: string) {
   const response = await fetch(`/api/documents/${hash}/download`, {
     method: 'GET',
     headers: {
-      'x-wallet-address': walletAddress,
+      'wallet-address': walletAddress,
     },
   })
   if (!response.ok) {
@@ -512,7 +512,7 @@ function App() {
       const uploadResponse = await postFileWithProgress<RegisterResponse>(
         '/api/upload',
         uploadFile,
-        { headers: { 'x-wallet-address': activeWallet } },
+        { headers: { 'wallet-address': activeWallet } },
         (percent) => setUploadProgress(percent),
       )
       setUploadProgress(null)

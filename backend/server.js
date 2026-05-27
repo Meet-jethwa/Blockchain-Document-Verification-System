@@ -91,10 +91,13 @@ function isEthAddress(value) {
 }
 
 function getRequesterAddress(req) {
-  const header = req.headers["x-wallet-address"];
-  const fromHeader = Array.isArray(header) ? header[0] : header;
+  // Prefer new header 'wallet-address' but accept legacy 'x-wallet-address' for compatibility
+  const primary = req.headers["wallet-address"];
+  const legacy = req.headers["x-wallet-address"];
+  const fromPrimary = Array.isArray(primary) ? primary[0] : primary;
+  const fromLegacy = Array.isArray(legacy) ? legacy[0] : legacy;
   const fromBody = req.body?.owner;
-  const addr = (fromHeader ?? fromBody ?? null);
+  const addr = (fromPrimary ?? fromLegacy ?? fromBody ?? null);
   if (!addr) return null;
   return String(addr);
 }
@@ -103,7 +106,7 @@ function requireRequesterAddress(req, res, role = "requester") {
   const address = getRequesterAddress(req);
   if (!isEthAddress(address)) {
     res.status(400).json({
-      error: `Missing/invalid ${role} address. Provide x-wallet-address header (0x...)`,
+      error: `Missing/invalid ${role} address. Provide wallet-address header (0x...)`,
     });
     return null;
   }
@@ -414,7 +417,7 @@ async function handleUpload(req, res) {
     const ownerAddress = getRequesterAddress(req);
     if (!isEthAddress(ownerAddress)) {
       return res.status(400).json({
-        error: "Missing/invalid owner address. Provide x-wallet-address header (0x...)",
+        error: "Missing/invalid owner address. Provide wallet-address header (0x...)",
       });
     }
 
@@ -626,7 +629,7 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
  */
 app.post("/api/verify-hash", async (req, res) => {
   try {
-    // Allow public verification by hash. No x-wallet-address header required.
+    // Allow public verification by hash. No wallet-address header required.
     const { hash } = req.body ?? {};
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
@@ -664,7 +667,7 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     const viewerAddress = getRequesterAddress(req);
     if (!isEthAddress(viewerAddress)) {
       return res.status(400).json({
-        error: "Missing/invalid viewer address. Provide x-wallet-address header (0x...)",
+        error: "Missing/invalid viewer address. Provide wallet-address header (0x...)",
       });
     }
 
