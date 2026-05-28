@@ -175,25 +175,28 @@ function makeManifest({ fileCid, fileMeta, encryption }) {
 
 async function summarizeAccessibleDocuments(walletAddress) {
   const lowerWallet = String(walletAddress).toLowerCase();
-  const onChainHashes = await chain.listRegisteredHashes();
+  const onChainDocuments = await chain.listRegisteredDocuments();
+  const onChainHashes = onChainDocuments.map((doc) => doc.hash).filter(Boolean);
   const localDocuments = await listDocuments();
   const localHashes = localDocuments.map((doc) => doc.hash).filter(Boolean);
   const hashes = Array.from(new Set([...onChainHashes, ...localHashes]));
   const localByHash = new Map(localDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
+  const onChainByHash = new Map(onChainDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
 
   const summaries = await Promise.all(
     hashes.map(async (hash) => {
-      const [proof, revoked, canView, verifiedOnChain, doc] = await Promise.all([
-        chain.getRegistrationProof(hash).catch(() => null),
+      const [meta, revoked, canView, verifiedOnChain, doc] = await Promise.all([
+        chain.getDocumentMeta(hash).catch(() => null),
         chain.isDocumentRevoked(hash).catch(() => null),
         chain.canViewDocument(hash, walletAddress).catch(() => null),
         chain.verifyDocumentHash(hash).catch(() => null),
         chain.getDocument(hash).catch(() => null),
       ]);
 
-      const chainUnavailable = proof === null && revoked === null && canView === null;
-      const ownerMatches = proof?.owner && String(proof.owner).toLowerCase() === lowerWallet;
-      const allowed = chainUnavailable ? !!ownerMatches : Boolean(canView) || !!ownerMatches;
+      const onChainDoc = onChainByHash.get(String(hash).toLowerCase()) ?? null;
+      const owner = meta?.owner ?? onChainDoc?.owner ?? null;
+      const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
+      const allowed = Boolean(canView) || !!ownerMatches;
       if (!allowed) {
         return null;
       }
@@ -201,10 +204,9 @@ async function summarizeAccessibleDocuments(walletAddress) {
       const isRevoked = revoked === true;
       if (isRevoked) return null;
 
-      const owner = proof?.owner ?? null;
-      const createdAt = proof?.createdAt ?? null;
+  const createdAt = meta?.createdAt ?? null;
       const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
-      const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? null;
+      const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? onChainDoc?.cid ?? null;
 
       return {
         hash,

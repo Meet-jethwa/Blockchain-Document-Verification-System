@@ -33,7 +33,7 @@ const DOCUMENT_REGISTRY_ABI =[
 		"anonymous": false,
 		"inputs": [
 			{
-				"indexed": false,
+					"indexed": true,
 				"internalType": "bytes32",
 				"name": "hash",
 				"type": "bytes32"
@@ -316,6 +316,35 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		return logs;
 	}
 
+	async function getDocumentRegisteredLogs() {
+		const latestBlock = await provider.getBlockNumber();
+		const fragment = contract.interface.getEvent('DocumentRegistered');
+		const logs = await getLogsInChunks({
+			topics: [fragment.topicHash],
+			fromBlock: 0,
+			toBlock: latestBlock,
+		});
+
+		return logs
+			.map((log) => {
+				try {
+					const decoded = contract.interface.decodeEventLog(fragment, log.data, log.topics);
+					const hash = decoded?.hash ?? decoded?.[0] ?? null;
+					const owner = decoded?.owner ?? decoded?.[1] ?? null;
+					const cid = decoded?.cid ?? decoded?.[2] ?? null;
+					return {
+						hash: typeof hash === 'string' ? hash : null,
+						owner: typeof owner === 'string' ? owner : null,
+						cid: typeof cid === 'string' ? cid : null,
+						blockNumber: log.blockNumber ?? null,
+					};
+				} catch {
+					return null;
+				}
+			})
+			.filter((entry) => entry && typeof entry.hash === 'string' && entry.hash.startsWith('0x') && entry.hash.length === 66);
+	}
+
   // Return object with all blockchain interaction methods
   return {
     provider,  // Expose provider for health checks
@@ -426,13 +455,12 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async getRegistrationProof(hash) {
 			await assertContractDeployed();
 			try {
-				const latestBlock = await provider.getBlockNumber();
 				const fragment = contract.interface.getEvent('DocumentRegistered');
 				const topics = contract.interface.encodeFilterTopics(fragment, [hash]);
 				const logs = await getLogsInChunks({
 					topics,
 					fromBlock: 0,
-					toBlock: latestBlock,
+					toBlock: await provider.getBlockNumber(),
 				});
 				const log = logs[0];
 				if (!log) return null;
@@ -450,20 +478,19 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async listRegisteredHashes() {
 			await assertContractDeployed();
 			try {
-				const latestBlock = await provider.getBlockNumber();
-				const fragment = contract.interface.getEvent('DocumentRegistered');
-				const topics = contract.interface.encodeFilterTopics(fragment, []);
-				const logs = await getLogsInChunks({
-					topics,
-					fromBlock: 0,
-					toBlock: latestBlock,
-				});
-				return logs
-					.map((log) => {
-						const decoded = contract.interface.decodeEventLog(fragment, log.data, log.topics);
-						return decoded?.hash ?? decoded?.[0] ?? null;
-					})
+				const registrations = await getDocumentRegisteredLogs();
+				return registrations
+					.map((entry) => entry.hash)
 					.filter((hash) => typeof hash === 'string' && hash.startsWith('0x') && hash.length === 66);
+			} catch (err) {
+				rethrowAbiMismatch(err);
+			}
+		},
+
+		async listRegisteredDocuments() {
+			await assertContractDeployed();
+			try {
+				return await getDocumentRegisteredLogs();
 			} catch (err) {
 				rethrowAbiMismatch(err);
 			}
