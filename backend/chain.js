@@ -423,8 +423,8 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async listRegisteredHashes() {
 			await assertContractDeployed();
 			try {
-				const fragment = contract.interface.getEvent('DocumentRegistered');
-				const logs = await contract.queryFilter(fragment, 0, 'latest');
+				const event = contract.getEvent('DocumentRegistered');
+				const logs = await contract.queryFilter(event, 0, 'latest');
 				return logs
 					.map((log) => log.args?.hash ?? log.args?.[0] ?? null)
 					.filter((hash) => typeof hash === 'string' && hash.startsWith('0x') && hash.length === 66);
