@@ -539,7 +539,8 @@ function App() {
       const provider = new ethers.BrowserProvider(ethereum)
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
-      const tx = await contract.registerDocument(hash, '')
+      const cid = uploadResponse.ipfs?.cid ?? ''
+      const tx = await contract.registerDocument(hash, cid)
       setUploadStage(3)
       setUploadMessage(`Transaction submitted: ${tx.hash}`)
       pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')

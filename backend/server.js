@@ -519,23 +519,10 @@ async function handleUpload(req, res) {
       filename: `${originalname || "document"}.manifest.json`,
     });
 
-    await putDocument({
-      hash,
-      owner: ownerAddress,
-      ipfs: {
-        cid: manifestResult.cid ?? null,
-        provider: manifestResult.provider ?? null,
-        fileCid: fileResult.cid ?? null,
-      },
-      file: fileMeta,
-      encryption: {
-        alg: "aes-256-cbc",
-        key: { alg: "aes-256-gcm", iv: null, tag: null, data: null },
-        iv: { alg: "aes-256-gcm", iv: null, tag: null, data: null },
-        wrapped: true,
-      },
-      createdAt: Date.now(),
-    });
+    // NOTE: Do not persist manifests to local storage in deployed environments
+    // that don't provide durable file storage. The canonical source of truth
+    // for retrieval is the IPFS manifest CID which we return to the caller and
+    // encourage to store on-chain when registering the hash.
 
     return res.json({
       message: "Accept the transaction in MetaMask.",
@@ -692,8 +679,9 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     }
 
     const storedDoc = await getStoredDocument(hash).catch(() => null);
-    const manifestCid = storedDoc?.ipfs?.cid;
-    if (!manifestCid) return res.status(500).json({ error: "Missing manifest CID on-chain" });
+    // Prefer local manifest CID when available, otherwise fall back to on-chain CID
+    const manifestCid = storedDoc?.ipfs?.cid ?? (onChainDoc?.cid ?? null);
+    if (!manifestCid) return res.status(500).json({ error: "Missing manifest CID (not in DB or on-chain)" });
 
     const manifestBytes = await ipfs.fetchBuffer({ cid: manifestCid });
     const manifestEnvelope = JSON.parse(manifestBytes.toString("utf8"));
