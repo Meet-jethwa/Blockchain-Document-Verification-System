@@ -428,8 +428,8 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 				const event = contract.getEvent('DocumentRegistered');
 				const logs = await contract.queryFilter(
 					event,
-					rees.toQuantity(0),
-					rees.toQuantity(latestBlock)
+					ethers.toQuantity(0),
+					ethers.toQuantity(latestBlock)
 				);
 				return logs
 					.map((log) => log.args?.hash ?? log.args?.[0] ?? null)
