@@ -399,13 +399,14 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async getRegistrationProof(hash) {
 			await assertContractDeployed();
 			try {
+				const latestBlock = await provider.getBlockNumber();
 				const fragment = contract.interface.getEvent('DocumentRegistered');
 				const topics = contract.interface.encodeFilterTopics(fragment, [hash]);
 				const logs = await provider.getLogs({
 					address: normalizedAddress,
 					topics,
-					fromBlock: 0,
-					toBlock: 'latest',
+					fromBlock: ethers.toQuantity(0),
+					toBlock: ethers.toQuantity(latestBlock),
 				});
 				const log = logs[0];
 				if (!log) return null;
@@ -423,8 +424,13 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async listRegisteredHashes() {
 			await assertContractDeployed();
 			try {
+				const latestBlock = await provider.getBlockNumber();
 				const event = contract.getEvent('DocumentRegistered');
-				const logs = await contract.queryFilter(event, 0, 'latest');
+				const logs = await contract.queryFilter(
+					event,
+					rees.toQuantity(0),
+					rees.toQuantity(latestBlock)
+				);
 				return logs
 					.map((log) => log.args?.hash ?? log.args?.[0] ?? null)
 					.filter((hash) => typeof hash === 'string' && hash.startsWith('0x') && hash.length === 66);
