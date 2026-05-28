@@ -173,6 +173,16 @@ function makeManifest({ fileCid, fileMeta, encryption }) {
   };
 }
 
+async function mapInBatches(items, batchSize, worker) {
+  const results = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    const batch = items.slice(index, index + batchSize);
+    const batchResults = await Promise.all(batch.map(worker));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 async function summarizeAccessibleDocuments(walletAddress) {
   const lowerWallet = String(walletAddress).toLowerCase();
   const onChainDocuments = await chain.listRegisteredDocuments();
@@ -183,43 +193,39 @@ async function summarizeAccessibleDocuments(walletAddress) {
   const localByHash = new Map(localDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
   const onChainByHash = new Map(onChainDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
 
-  const summaries = await Promise.all(
-    hashes.map(async (hash) => {
-      const [meta, revoked, canView, verifiedOnChain, doc] = await Promise.all([
-        chain.getDocumentMeta(hash).catch(() => null),
-        chain.isDocumentRevoked(hash).catch(() => null),
-        chain.canViewDocument(hash, walletAddress).catch(() => null),
-        chain.verifyDocumentHash(hash).catch(() => null),
-        chain.getDocument(hash).catch(() => null),
-      ]);
+  const summaries = await mapInBatches(hashes, 5, async (hash) => {
+    const [meta, revoked, canView] = await Promise.all([
+      chain.getDocumentMeta(hash).catch(() => null),
+      chain.isDocumentRevoked(hash).catch(() => null),
+      chain.canViewDocument(hash, walletAddress).catch(() => null),
+    ]);
 
-      const onChainDoc = onChainByHash.get(String(hash).toLowerCase()) ?? null;
-      const owner = meta?.owner ?? onChainDoc?.owner ?? null;
-      const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
-      const allowed = Boolean(canView) || !!ownerMatches;
-      if (!allowed) {
-        return null;
-      }
+    const onChainDoc = onChainByHash.get(String(hash).toLowerCase()) ?? null;
+    const owner = meta?.owner ?? onChainDoc?.owner ?? null;
+    const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
+    const allowed = Boolean(canView) || !!ownerMatches;
+    if (!allowed) {
+      return null;
+    }
 
-      const isRevoked = revoked === true;
-      if (isRevoked) return null;
+    if (revoked === true) {
+      return null;
+    }
 
-  const createdAt = meta?.createdAt ?? null;
-      const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
-      const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? onChainDoc?.cid ?? null;
+    const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
+    const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? onChainDoc?.cid ?? null;
 
-      return {
-        hash,
-        name: `Document ${shortHash(hash)}`,
-        owner,
-        createdAt: createdAt != null ? Number(createdAt) : null,
-        verified: !!verifiedOnChain,
-        status: "Registered",
-        cid: manifestCid,
-        access,
-      };
-    }),
-  );
+    return {
+      hash,
+      name: `Document ${shortHash(hash)}`,
+      owner,
+      createdAt: meta?.createdAt != null ? Number(meta.createdAt) : null,
+      verified: true,
+      status: "Registered",
+      cid: manifestCid,
+      access,
+    };
+  });
 
   const active = summaries.filter(Boolean);
   const owned = active
