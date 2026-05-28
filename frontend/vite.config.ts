@@ -8,7 +8,7 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
-      '/api': 'https://blockchain-document-verification-system-hdpm.onrender.com',
+      '/api': 'http://localhost:8080',
     },
   },
 })
