@@ -21,10 +21,10 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { config } from "./config.js";
-import { makeChainClient, hashFileKeccak256 } from "./chain.js";
+import { makeChainClient, hashFileSha256 } from "./chain.js";
+import { getDocument as getStoredDocument, listDocuments, putDocument } from "./documentIndex.js";
 import { pickIpfsUploader } from "./ipfs.js";
 import { encryptFile, decryptFile } from "./fileCrypto.js";
-import { getDocument, listDocuments, putDocument } from "./documentStore.js";
 import { createDefaultProfile, getProfile, putProfile } from "./profileStore.js";
 import { getMasterKeyFromEnv, unwrapSecret, wrapSecret } from "./secretBox.js";
 
@@ -140,22 +140,55 @@ function shortHash(hash) {
   return hash.length > 16 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
 
+function encodePayloadJson(value, masterKey) {
+  const payload = Buffer.from(JSON.stringify(value), "utf8");
+  if (masterKey) return wrapSecret(payload, masterKey);
+  return { alg: "raw", data: payload.toString("base64") };
+}
+
+function decodePayloadJson(envelope, masterKey) {
+  if (!envelope || typeof envelope !== "object") {
+    throw new Error("Invalid manifest envelope");
+  }
+
+  let payload;
+  if (envelope.alg === "raw") {
+    payload = Buffer.from(String(envelope.data), "base64");
+  } else {
+    if (!masterKey) {
+      throw new Error("Server misconfiguration: FILE_MASTER_KEY is required to read the encrypted manifest");
+    }
+    payload = unwrapSecret(envelope, masterKey);
+  }
+
+  return JSON.parse(payload.toString("utf8"));
+}
+
+function makeManifest({ fileCid, fileMeta, encryption }) {
+  return {
+    version: 1,
+    fileCid,
+    file: fileMeta,
+    encryption,
+  };
+}
+
 async function summarizeAccessibleDocuments(walletAddress) {
   const lowerWallet = String(walletAddress).toLowerCase();
-  const documents = await listDocuments();
+  const onChainHashes = await chain.listRegisteredHashes();
+  const localDocuments = await listDocuments();
+  const localHashes = localDocuments.map((doc) => doc.hash).filter(Boolean);
+  const hashes = Array.from(new Set([...onChainHashes, ...localHashes]));
+  const localByHash = new Map(localDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
 
   const summaries = await Promise.all(
-    documents.map(async (dbDoc) => {
-      const hash = dbDoc?.hash;
-      if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
-        return null;
-      }
-
-      const [proof, revoked, canView, verifiedOnChain] = await Promise.all([
+    hashes.map(async (hash) => {
+      const [proof, revoked, canView, verifiedOnChain, doc] = await Promise.all([
         chain.getRegistrationProof(hash).catch(() => null),
         chain.isDocumentRevoked(hash).catch(() => null),
         chain.canViewDocument(hash, walletAddress).catch(() => null),
         chain.verifyDocumentHash(hash).catch(() => null),
+        chain.getDocument(hash).catch(() => null),
       ]);
 
       const chainUnavailable = proof === null && revoked === null && canView === null;
@@ -171,6 +204,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
       const owner = proof?.owner ?? null;
       const createdAt = proof?.createdAt ?? null;
       const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
+      const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? null;
 
       return {
         hash,
@@ -179,7 +213,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
         createdAt: createdAt != null ? Number(createdAt) : null,
         verified: !!verifiedOnChain,
         status: "Registered",
-        cid: dbDoc.ipfs?.cid ?? null,
+        cid: manifestCid,
         access,
       };
     }),
@@ -204,16 +238,25 @@ async function buildVerificationResponse(hash) {
     chain.verifyDocumentHash(hash).catch(() => false),
   ]);
 
+  const authentic = !!existsOnChain;
+  const status = authentic
+    ? revoked
+      ? "Authentic, but revoked"
+      : "Authentic / Untampered"
+    : "Modified / Fake";
+
   return {
     hash,
     existsOnChain,
-    // `verified` reflects the contract's `verifyDocument` result (exists && not revoked)
-    verified: !!verifiedOnChain,
-    // When verified, include an approximate timestamp for when the hash was recorded
-    verifiedAt: verifiedOnChain ? (proof?.createdAt ?? (dbDoc?.createdAt ? Math.floor(dbDoc.createdAt / 1000) : Math.floor(Date.now() / 1000))) : null,
-    verifiedMessage: verifiedOnChain
-      ? `Hash verified around ${new Date((proof?.createdAt ?? (dbDoc?.createdAt ? Math.floor(dbDoc.createdAt / 1000) : Math.floor(Date.now() / 1000))) * 1000).toISOString()}`
-      : null,
+    verified: authentic,
+    authentic,
+    status,
+    verifiedAt: authentic && proof?.createdAt != null ? Number(proof.createdAt) : null,
+    verifiedMessage: authentic
+      ? revoked
+        ? "Hash matches an on-chain record, but the document is revoked"
+        : "Hash matches an on-chain record"
+      : "No matching hash found on-chain",
     revoked,
     onChain: proof
       ? {
@@ -369,7 +412,7 @@ app.get("/api/documents", async (req, res) => {
  * 
  * Response:
  * {
- *   hash: "0x...",              // Keccak-256 hash of file
+ *   hash: "0x...",              // SHA-256 hash of file
  *   file: {name, mimetype, size}, // File metadata
  *   ipfs: {cid, url, provider},   // IPFS upload result
  *   chain: {contractAddress, ...},
@@ -378,7 +421,7 @@ app.get("/api/documents", async (req, res) => {
  * 
  * WORKFLOW EXPLANATION:
  * 1. Receive file from frontend
- * 2. Compute cryptographic hash (Keccak-256)
+ * 2. Compute cryptographic hash (SHA-256)
  * 3. Check if already registered on blockchain (prevents duplicate uploads)
  * 4. If new: Upload file to IPFS, get CID (Content Identifier)
  * 5. Return hash + CID to frontend
@@ -398,7 +441,7 @@ async function handleUpload(req, res) {
 
     const { originalname, buffer, mimetype, size } = req.file;
     fileMeta = { name: originalname, mimetype, size };
-    hash = hashFileKeccak256(buffer);
+    hash = hashFileSha256(buffer);
 
     const ownerAddress = getRequesterAddress(req);
     if (!isEthAddress(ownerAddress)) {
@@ -431,51 +474,13 @@ async function handleUpload(req, res) {
         });
       }
 
-      // Attempt to include any backend-stored IPFS info for this hash.
-      // If record is missing (e.g., backend redeploy wiped local JSON), recreate it
-      // so the owner can download/view this document again without a new on-chain tx.
-      let dbDoc = null;
-      try {
-        dbDoc = await getDocument(hash);
-      } catch {}
-
-      if (!dbDoc) {
-        const { encrypted, key, iv } = encryptFile(buffer);
-
-        const ipfsResult = await ipfs.uploadBuffer({
-          buffer: encrypted,
-          filename: `${originalname || "document"}.enc`,
-        });
-
-        const keyRecord = masterKey ? wrapSecret(key, masterKey) : { alg: "raw", data: key.toString("base64") };
-        const ivRecord = masterKey ? wrapSecret(iv, masterKey) : { alg: "raw", data: iv.toString("base64") };
-
-        await putDocument(hash, {
-          hash,
-          ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
-          encryption: {
-            alg: "aes-256-cbc",
-            key: keyRecord,
-            iv: ivRecord,
-            wrapped: !!masterKey,
-          },
-        });
-
-        dbDoc = {
-          hash,
-          ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
-          encryption: { alg: "aes-256-cbc", wrapped: !!masterKey },
-        };
-      }
-
-      const ipfsInfo = dbDoc?.ipfs?.cid
-        ? { cid: dbDoc.ipfs.cid, url: `${config.ipfsGatewayBaseUrl}${dbDoc.ipfs.cid}`, provider: dbDoc.ipfs.provider ?? null }
+      const storedDoc = await getStoredDocument(hash).catch(() => null);
+      const ipfsInfo = storedDoc?.ipfs?.cid
+        ? { cid: storedDoc.ipfs.cid, url: `${config.ipfsGatewayBaseUrl}${storedDoc.ipfs.cid}`, provider: storedDoc.ipfs.provider ?? null }
         : { cid: null, url: null, provider: null };
 
       return res.json({
-        message: dbDoc?.ipfs?.cid
-          ? "This document is already registered. Backend storage is available."
-          : "This document is already registered.",
+        message: "This document is already registered on-chain.",
         hash,
         file: fileMeta,
         alreadyRegistered: true,
@@ -494,26 +499,42 @@ async function handleUpload(req, res) {
     // Always encrypt before uploading to IPFS.
     const { encrypted, key, iv } = encryptFile(buffer);
 
-    const ipfsResult = await ipfs.uploadBuffer({
+    const fileResult = await ipfs.uploadBuffer({
       buffer: encrypted,
       filename: `${originalname || "document"}.enc`,
     });
 
-    // Store CID + key material server-side only (never return keys to clients).
-    // For production: key/iv should not be stored plaintext. If FILE_MASTER_KEY is set,
-    // we wrap the secret bytes with AES-256-GCM.
-    const keyRecord = masterKey ? wrapSecret(key, masterKey) : { alg: "raw", data: key.toString("base64") };
-    const ivRecord = masterKey ? wrapSecret(iv, masterKey) : { alg: "raw", data: iv.toString("base64") };
-
-    await putDocument(hash, {
-      hash,
-      ipfs: { cid: ipfsResult.cid, provider: ipfsResult.provider },
+    const manifest = makeManifest({
+      fileCid: fileResult.cid,
+      fileMeta,
       encryption: {
         alg: "aes-256-cbc",
-        key: keyRecord,
-        iv: ivRecord,
-        wrapped: !!masterKey,
+        key: key.toString("base64"),
+        iv: iv.toString("base64"),
       },
+    });
+    const manifestEnvelope = encodePayloadJson(manifest, masterKey);
+    const manifestResult = await ipfs.uploadBuffer({
+      buffer: Buffer.from(JSON.stringify(manifestEnvelope), "utf8"),
+      filename: `${originalname || "document"}.manifest.json`,
+    });
+
+    await putDocument({
+      hash,
+      owner: ownerAddress,
+      ipfs: {
+        cid: manifestResult.cid ?? null,
+        provider: manifestResult.provider ?? null,
+        fileCid: fileResult.cid ?? null,
+      },
+      file: fileMeta,
+      encryption: {
+        alg: "aes-256-cbc",
+        key: { alg: "aes-256-gcm", iv: null, tag: null, data: null },
+        iv: { alg: "aes-256-gcm", iv: null, tag: null, data: null },
+        wrapped: true,
+      },
+      createdAt: Date.now(),
     });
 
     return res.json({
@@ -521,9 +542,10 @@ async function handleUpload(req, res) {
       hash,
       file: fileMeta,
       ipfs: {
-        cid: ipfsResult.cid ?? null,
-        url: ipfsResult.url ?? (ipfsResult.cid ? `${config.ipfsGatewayBaseUrl}${ipfsResult.cid}` : null),
-        provider: ipfsResult.provider ?? null,
+        cid: manifestResult.cid ?? null,
+        url: manifestResult.url ?? (manifestResult.cid ? `${config.ipfsGatewayBaseUrl}${manifestResult.cid}` : null),
+        provider: manifestResult.provider ?? null,
+        fileCid: fileResult.cid ?? null,
       },
       encryption: { enabled: true, cipher: "AES-256-CBC", keyStored: true },
       chain: {
@@ -576,7 +598,7 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: "Missing file (field name: file)" });
     }
-    const hash = hashFileKeccak256(req.file.buffer);
+    const hash = hashFileSha256(req.file.buffer);
     const result = await buildVerificationResponse(hash);
     return res.json({
       ...result,
@@ -648,10 +670,10 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       });
     }
 
-    const doc = await getDocument(hash);
-    if (!doc) return res.status(404).json({ error: "Document not found in backend database" });
+    const onChainDoc = await chain.getDocument(hash);
+    if (!onChainDoc) return res.status(404).json({ error: "Document not found on-chain" });
 
-    const isOwner = String(doc.owner).toLowerCase() === String(viewerAddress).toLowerCase();
+    const isOwner = String(onChainDoc.owner).toLowerCase() === String(viewerAddress).toLowerCase();
 
     // Enforce authorization via on-chain access control, but always allow the owner.
     // NOTE: This only checks permissions; it does not store CID/key on-chain.
@@ -669,28 +691,24 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       return res.status(403).json({ error: "Not authorized to view this document" });
     }
 
-    const cid = doc?.ipfs?.cid;
-    if (!cid) return res.status(500).json({ error: "Missing CID in backend database" });
+    const storedDoc = await getStoredDocument(hash).catch(() => null);
+    const manifestCid = storedDoc?.ipfs?.cid;
+    if (!manifestCid) return res.status(500).json({ error: "Missing manifest CID on-chain" });
 
-    const encryptedBytes = await ipfs.fetchBuffer({ cid });
+    const manifestBytes = await ipfs.fetchBuffer({ cid: manifestCid });
+    const manifestEnvelope = JSON.parse(manifestBytes.toString("utf8"));
+    const manifest = decodePayloadJson(manifestEnvelope, masterKey);
 
-    if (doc.encryption?.key?.alg !== "raw" && !masterKey) {
-      return res.status(500).json({
-        error: "Server misconfiguration: FILE_MASTER_KEY is required to decrypt stored key material",
-      });
-    }
+    const fileCid = manifest?.fileCid;
+    if (!fileCid) return res.status(500).json({ error: "Missing encrypted file CID in manifest" });
 
-    const keyBytes =
-      doc.encryption?.key?.alg === "raw"
-        ? Buffer.from(String(doc.encryption.key.data), "base64")
-        : unwrapSecret(doc.encryption.key, masterKey);
-    const ivBytes =
-      doc.encryption?.iv?.alg === "raw"
-        ? Buffer.from(String(doc.encryption.iv.data), "base64")
-        : unwrapSecret(doc.encryption.iv, masterKey);
+    const encryptedBytes = await ipfs.fetchBuffer({ cid: fileCid });
+
+    const keyBytes = Buffer.from(String(manifest?.encryption?.key), "base64");
+    const ivBytes = Buffer.from(String(manifest?.encryption?.iv), "base64");
 
     const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes);
-    const downloadedHash = hashFileKeccak256(plaintext);
+    const downloadedHash = hashFileSha256(plaintext);
     const existsOnChain = await chain.documentExists(downloadedHash);
     const verifiedOnChain = await chain.verifyDocumentHash(downloadedHash).catch(() => false);
     if (!existsOnChain) {
@@ -708,8 +726,8 @@ app.get("/api/documents/:hash/download", async (req, res) => {
 
     // Integrity passed: set informational headers and return the original file.
     // We avoid exposing any document hashes in headers or body.
-    const filename = doc?.file?.name || "document";
-    const mimetype = doc?.file?.mimetype || "application/octet-stream";
+    const filename = manifest?.file?.name || "document";
+    const mimetype = manifest?.file?.mimetype || "application/octet-stream";
     res.setHeader("Content-Type", mimetype);
     res.setHeader("Content-Disposition", `attachment; filename="${String(filename).replace(/"/g, "")}"`);
     res.setHeader("X-Document-Integrity", "passed");

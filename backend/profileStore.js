@@ -1,4 +1,3 @@
-import { MongoClient } from "mongodb";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,12 +5,6 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const STORE_PATH = path.join(DATA_DIR, "profiles.json");
-
-const mongoUri = process.env.MONGODB_URI?.trim();
-let mongoClient = mongoUri ? new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2500 }) : null;
-let mongoDb = null;
-let mongoConnectPromise = null;
-let mongoDisabled = false;
 let writeQueue = Promise.resolve();
 
 async function ensureDataDir() {
@@ -43,36 +36,6 @@ async function saveJsonStore(store) {
   await fs.rename(tmp, STORE_PATH);
 }
 
-async function ensureMongo() {
-  if (!mongoClient || mongoDisabled) return null;
-  if (mongoDb) return mongoDb;
-  if (!mongoConnectPromise) {
-    mongoConnectPromise = mongoClient
-      .connect()
-      .then(() => {
-        mongoDb = mongoClient.db();
-        return mongoDb;
-      })
-      .catch((err) => {
-        mongoDisabled = true;
-        mongoClient = null;
-        mongoConnectPromise = null;
-        mongoDb = null;
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[profileStore] MongoDB unavailable (${err instanceof Error ? err.message : String(err)}); falling back to JSON store.`,
-        );
-        return null;
-      });
-  }
-  return mongoConnectPromise;
-}
-
-async function getCollection() {
-  const db = await ensureMongo();
-  return db ? db.collection("profiles") : null;
-}
-
 function normalizeAddress(address) {
   return String(address).toLowerCase();
 }
@@ -96,12 +59,6 @@ export async function getProfile(address) {
   }
 
   const key = normalizeAddress(address);
-  const collection = await getCollection();
-  if (collection) {
-    const doc = await collection.findOne({ _id: key }, { projection: { _id: 0 } });
-    return doc ?? null;
-  }
-
   const store = await loadJsonStore();
   return store.profiles[key] ?? null;
 }
@@ -120,16 +77,6 @@ export async function putProfile(address, profile) {
   };
 
   writeQueue = writeQueue.then(async () => {
-    const collection = await getCollection();
-    if (collection) {
-      await collection.updateOne(
-        { _id: key },
-        { $set: { ...nextProfile, _id: key } },
-        { upsert: true },
-      );
-      return;
-    }
-
     const store = await loadJsonStore();
     store.profiles[key] = nextProfile;
     await saveJsonStore(store);

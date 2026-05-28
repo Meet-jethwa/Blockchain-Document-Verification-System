@@ -30,6 +30,7 @@ type VerifyPreview = {
   verified: boolean
   revoked: boolean
   existsOnChain: boolean
+  status: string
   note: string
 }
 
@@ -148,7 +149,9 @@ function downloadBytes(bytes: Uint8Array, filename: string, mimetype: string) {
 
 async function extractHash(file: File) {
   const buffer = await file.arrayBuffer()
-  return ethers.keccak256(new Uint8Array(buffer))
+  const digest = await window.crypto.subtle.digest('SHA-256', buffer)
+  const bytes = new Uint8Array(digest)
+  return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
 async function fetchBackendHealth() {
@@ -314,7 +317,7 @@ function App() {
       return
     }
     let cancelled = false
-    setUploadMessage('Calculating keccak256 hash locally.')
+    setUploadMessage('Calculating SHA-256 hash locally.')
     void extractHash(uploadFile)
       .then((hash) => {
         if (cancelled) return
@@ -457,7 +460,8 @@ function App() {
         verified: !!response.verified,
         revoked: !!response.revoked,
         existsOnChain: !!response.existsOnChain,
-        note: response.verified ? 'Verified on-chain' : 'No on-chain registration found',
+        status: response.status || (response.verified ? 'Authentic / Untampered' : 'Modified / Fake'),
+        note: response.verifiedMessage || (response.verified ? 'Hash matches a record on-chain' : 'No matching hash found on-chain'),
       })
       pushToast(response.verified ? 'Document verified' : 'Document not found', shortHash(hash), response.verified ? 'success' : 'warning')
     } catch (error) {
@@ -535,19 +539,19 @@ function App() {
       const provider = new ethers.BrowserProvider(ethereum)
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
-      const tx = await contract.registerDocument(hash, uploadResponse.ipfs.cid ?? '')
+      const tx = await contract.registerDocument(hash, '')
       setUploadStage(3)
-      setUploadMessage('Transaction pending. Waiting for confirmation.')
+      setUploadMessage(`Transaction submitted: ${tx.hash}`)
       pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')
       await tx.wait()
-      setUploadMessage('Document anchored on-chain.')
+      setUploadMessage(`Document anchored on-chain. Transaction hash: ${tx.hash}`)
       // Query backend for canonical verification response so UI shows the same
       // verification output as backend (includes database info and timestamps).
       try {
         const verified = await verifyHash(hash, walletAddress ?? undefined)
         pushToast('Registration confirmed', shortHash(hash), 'success')
         if (verified.onChain && verified.onChain.createdAt) {
-          setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}`)
+          setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}. Transaction hash: ${tx.hash}`)
         }
       } catch (e) {
         // Non-fatal: still refresh documents if backend verify fails temporarily
@@ -884,7 +888,7 @@ function Header(props: {
         {verifyPreview ? (
           <div className={verifyPreview.verified ? 'verifyResult verified' : 'verifyResult'}>
             <span className={verifyPreview.verified ? 'statusPill success' : 'statusPill warning'}>
-              {verifyPreview.verified ? 'Verified' : 'Not Found'}
+              {verifyPreview.status}
             </span>
             <button className="hashPill" type="button" onClick={() => copyText(verifyPreview.hash)}>
               {shortHash(verifyPreview.hash)}
@@ -1207,6 +1211,8 @@ function UploadPage(props: {
           {busy ? 'Working...' : 'Register on Blockchain'}
         </button>
       </div>
+
+      {props.message ? <div className="verifyNote uploadMessage">{props.message}</div> : null}
     </section>
   )
 }

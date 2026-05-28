@@ -9,6 +9,7 @@
  * - Provides functions to: register documents, verify documents, retrieve document data
  */
 
+import { createHash } from "node:crypto";
 import { ethers } from "ethers";
 
 /**
@@ -419,6 +420,19 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 			}
 		},
 
+		async listRegisteredHashes() {
+			await assertContractDeployed();
+			try {
+				const fragment = contract.interface.getEvent('DocumentRegistered');
+				const logs = await contract.queryFilter(fragment, 0, 'latest');
+				return logs
+					.map((log) => log.args?.hash ?? log.args?.[0] ?? null)
+					.filter((hash) => typeof hash === 'string' && hash.startsWith('0x') && hash.length === 66);
+			} catch (err) {
+				rethrowAbiMismatch(err);
+			}
+		},
+
 		/**
 		 * Checks existence regardless of revocation.
 		 * (verifyDocument() may be false for revoked documents.)
@@ -449,21 +463,24 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 }
 
 /**
- * Computes the Keccak-256 hash of a file buffer
+ * Computes the SHA-256 hash of a file buffer
  * @param {Buffer} buffer - File contents as Buffer
  * @returns {string} 0x-prefixed bytes32 hex string (66 characters total)
  * 
  * EXPLANATION FOR PROFESSOR:
- * - Keccak-256 is the hashing algorithm used by Ethereum (similar to SHA-3)
+ * - SHA-256 is the standard hashing algorithm used for document integrity checks
  * - Input: Any sized file → Output: Always 32 bytes (256 bits) = 64 hex characters
  * - Same file = same hash, Different file = completely different hash
  * - Even 1 bit change in file produces completely different hash (avalanche effect)
  * - This is a one-way function: hash cannot be reversed to get original file
  * Example hash: 0x1234...abcd (0x prefix + 64 hex chars = 66 total chars)
  */
+export function hashFileSha256(buffer) {
+	return `0x${createHash("sha256").update(buffer).digest("hex")}`;
+}
+
 export function hashFileKeccak256(buffer) {
-  // ethers.keccak256 computes the hash and returns it in Ethereum's 0x-prefixed format
-  return ethers.keccak256(buffer);
+	return hashFileSha256(buffer);
 }
 
 

@@ -27,6 +27,10 @@ export type VerifyResponse = {
   hash: string
   existsOnChain: boolean
   verified: boolean
+  authentic?: boolean
+  status?: string
+  verifiedAt?: number | null
+  verifiedMessage?: string | null
   revoked: boolean
   onChain: {
     owner: string | null
