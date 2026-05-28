@@ -119,8 +119,8 @@ export const config = {
   // Optional: used to encrypt per-document file keys/IVs at rest (NOT used for the file encryption itself)
   // Accepts 32-byte hex (with or without 0x) or 32-byte base64
   fileMasterKey: getOptional("FILE_MASTER_KEY"),
-  // Optional MongoDB connection string for persistent document index
-  mongodbUri: getOptional("MONGODB_URI"),
+  // MongoDB disabled to avoid storing PII
+  mongodbUri: undefined,
 };
 
 
