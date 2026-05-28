@@ -289,6 +289,33 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
     throw err;
   }
 
+	// Some managed RPC providers (e.g. Google Blockchain RPC) enforce tiny eth_getLogs ranges.
+	// Keep each request to 5 blocks (inclusive) by using a span of 4.
+	const LOG_QUERY_MAX_SPAN = 4;
+
+	async function getLogsInChunks({ topics, fromBlock = 0, toBlock }) {
+		const startBlock = Number(fromBlock);
+		const endBlock = Number(toBlock ?? (await provider.getBlockNumber()));
+		const logs = [];
+
+		if (!Number.isFinite(startBlock) || !Number.isFinite(endBlock) || endBlock < startBlock) {
+			return logs;
+		}
+
+		for (let chunkStart = startBlock; chunkStart <= endBlock; chunkStart += LOG_QUERY_MAX_SPAN + 1) {
+			const chunkEnd = Math.min(chunkStart + LOG_QUERY_MAX_SPAN, endBlock);
+			const chunkLogs = await provider.getLogs({
+				address: normalizedAddress,
+				topics,
+				fromBlock: ethers.toQuantity(chunkStart),
+				toBlock: ethers.toQuantity(chunkEnd),
+			});
+			logs.push(...chunkLogs);
+		}
+
+		return logs;
+	}
+
   // Return object with all blockchain interaction methods
   return {
     provider,  // Expose provider for health checks
@@ -402,11 +429,10 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 				const latestBlock = await provider.getBlockNumber();
 				const fragment = contract.interface.getEvent('DocumentRegistered');
 				const topics = contract.interface.encodeFilterTopics(fragment, [hash]);
-				const logs = await provider.getLogs({
-					address: normalizedAddress,
+				const logs = await getLogsInChunks({
 					topics,
-					fromBlock: ethers.toQuantity(0),
-					toBlock: ethers.toQuantity(latestBlock),
+					fromBlock: 0,
+					toBlock: latestBlock,
 				});
 				const log = logs[0];
 				if (!log) return null;
@@ -425,14 +451,18 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 			await assertContractDeployed();
 			try {
 				const latestBlock = await provider.getBlockNumber();
-				const event = contract.getEvent('DocumentRegistered');
-				const logs = await contract.queryFilter(
-					event,
-					ethers.toQuantity(0),
-					ethers.toQuantity(latestBlock)
-				);
+				const fragment = contract.interface.getEvent('DocumentRegistered');
+				const topics = contract.interface.encodeFilterTopics(fragment, []);
+				const logs = await getLogsInChunks({
+					topics,
+					fromBlock: 0,
+					toBlock: latestBlock,
+				});
 				return logs
-					.map((log) => log.args?.hash ?? log.args?.[0] ?? null)
+					.map((log) => {
+						const decoded = contract.interface.decodeEventLog(fragment, log.data, log.topics);
+						return decoded?.hash ?? decoded?.[0] ?? null;
+					})
 					.filter((hash) => typeof hash === 'string' && hash.startsWith('0x') && hash.length === 66);
 			} catch (err) {
 				rethrowAbiMismatch(err);
