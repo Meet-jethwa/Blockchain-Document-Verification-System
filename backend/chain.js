@@ -292,6 +292,8 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 	// Some managed RPC providers (e.g. Google Blockchain RPC) enforce tiny eth_getLogs ranges.
 	// Keep each request to 5 blocks (inclusive) by using a span of 4.
 	const LOG_QUERY_MAX_SPAN = 4;
+	let cachedRegistrationLogs = [];
+	let cachedRegistrationLatestBlock = -1;
 
 	async function getLogsInChunks({ topics, fromBlock = 0, toBlock }) {
 		const startBlock = Number(fromBlock);
@@ -316,16 +318,29 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		return logs;
 	}
 
+	async function getLogsInChunksRange({ topics, fromBlock, toBlock }) {
+		return getLogsInChunks({ topics, fromBlock, toBlock });
+	}
+
 	async function getDocumentRegisteredLogs() {
 		const latestBlock = await provider.getBlockNumber();
 		const fragment = contract.interface.getEvent('DocumentRegistered');
-		const logs = await getLogsInChunks({
-			topics: [fragment.topicHash],
-			fromBlock: 0,
-			toBlock: latestBlock,
-		});
+		if (cachedRegistrationLatestBlock > latestBlock) {
+			cachedRegistrationLogs = [];
+			cachedRegistrationLatestBlock = -1;
+		}
 
-		return logs
+		const fromBlock = cachedRegistrationLatestBlock >= 0 ? cachedRegistrationLatestBlock + 1 : 0;
+		const freshLogs = fromBlock <= latestBlock
+			? await getLogsInChunksRange({
+				topics: [fragment.topicHash],
+				fromBlock,
+				toBlock: latestBlock,
+			})
+			: [];
+
+		if (freshLogs.length > 0 || cachedRegistrationLogs.length === 0) {
+			const decodedFreshLogs = freshLogs
 			.map((log) => {
 				try {
 					const decoded = contract.interface.decodeEventLog(fragment, log.data, log.topics);
@@ -343,6 +358,12 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 				}
 			})
 			.filter((entry) => entry && typeof entry.hash === 'string' && entry.hash.startsWith('0x') && entry.hash.length === 66);
+
+			cachedRegistrationLogs = [...cachedRegistrationLogs, ...decodedFreshLogs];
+			cachedRegistrationLatestBlock = latestBlock;
+		}
+
+		return cachedRegistrationLogs;
 	}
 
   // Return object with all blockchain interaction methods
@@ -455,14 +476,8 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async getRegistrationProof(hash) {
 			await assertContractDeployed();
 			try {
-				const fragment = contract.interface.getEvent('DocumentRegistered');
-				const topics = contract.interface.encodeFilterTopics(fragment, [hash]);
-				const logs = await getLogsInChunks({
-					topics,
-					fromBlock: 0,
-					toBlock: await provider.getBlockNumber(),
-				});
-				const log = logs[0];
+				const registrations = await getDocumentRegisteredLogs();
+				const log = registrations.find((entry) => entry.hash.toLowerCase() === String(hash).toLowerCase());
 				if (!log) return null;
 				const [owner, createdAt] = await contract.getDocumentMeta(hash);
 				return {
