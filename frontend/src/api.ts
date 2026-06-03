@@ -115,7 +115,8 @@ function extractErrorMessage(data: unknown): string | null {
 }
 
 function resolveUrl(url: string) {
-  const base = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
+  const env = (import.meta as any).env
+  const base = (env?.VITE_API_URL || env?.VITE_API_BASE_URL) as string | undefined
   if (!base) return url
   const trimmed = base.replace(/\/+$/, '')
   if (url.startsWith('/')) return `${trimmed}${url}`
