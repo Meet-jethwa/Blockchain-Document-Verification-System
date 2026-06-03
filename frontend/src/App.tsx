@@ -1330,6 +1330,14 @@ function SharedPage(props: {
   walletAddress: string | null
 }) {
   const { docs, filter, loading, onDownload, onFilterChange, onRefresh, walletAddress } = props
+  const [expandedHashes, setExpandedHashes] = useState<Record<string, boolean>>({})
+
+  const toggleExpand = (hash: string) => {
+    setExpandedHashes((prev) => ({
+      ...prev,
+      [hash]: !prev[hash],
+    }))
+  }
 
   const filteredDocs = docs.filter((doc) => {
     const query = filter.trim().toLowerCase()
@@ -1440,28 +1448,33 @@ function SharedPage(props: {
                 Download
               </button>
 
-              <div className="sharedBottomHashes">
-                <div className="sharedBottomHashRow">
-                  <span className="sharedBottomHashLabel">shared Document hash:</span>
-                  <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
-                    {shortHash(doc.hash)}
-                  </button>
-                </div>
-                <div className="sharedBottomHashRow">
-                  <span className="sharedBottomHashLabel">Registrator hash:</span>
-                  <button type="button" className="hashPill" onClick={() => void copyText(doc.owner || '')}>
-                    {shortAddr(doc.owner)}
-                  </button>
-                </div>
-                {doc.cid ? (
+              <div style={{ textAlign: 'center', marginTop: '12px' }}>
+                <button
+                  type="button"
+                  className="ghostButton"
+                  style={{ width: '100%', borderRadius: '12px', fontSize: '0.85rem' }}
+                  onClick={() => toggleExpand(doc.hash)}
+                >
+                  {expandedHashes[doc.hash] ? 'View Less ▲' : 'View More ▼'}
+                </button>
+              </div>
+
+              {expandedHashes[doc.hash] ? (
+                <div className="sharedBottomHashes">
                   <div className="sharedBottomHashRow">
-                    <span className="sharedBottomHashLabel">IPFS CID:</span>
-                    <button type="button" className="hashPill" onClick={() => void copyText(doc.cid || '')}>
-                      {shortHash(doc.cid)}
+                    <span className="sharedBottomHashLabel">shared Document hash:</span>
+                    <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
+                      {shortHash(doc.hash)}
                     </button>
                   </div>
-                ) : null}
-              </div>
+                  <div className="sharedBottomHashRow">
+                    <span className="sharedBottomHashLabel">Registrator hash:</span>
+                    <button type="button" className="hashPill" onClick={() => void copyText(doc.owner || '')}>
+                      {shortAddr(doc.owner)}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>
