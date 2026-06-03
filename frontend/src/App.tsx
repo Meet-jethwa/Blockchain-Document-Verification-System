@@ -1187,14 +1187,14 @@ function DashboardPage(props: {
   onShare: (doc: LedgerDocument) => void
   walletAddress: string | null
 }) {
-  const { balance, docs, filter, loading, metrics, onDownload, onFilterChange, onRefresh, onRevoke, onShare, walletAddress } = props
+  const { docs, filter, loading, metrics, onDownload, onFilterChange, onRefresh, onRevoke, onShare, walletAddress } = props
 
   return (
     <section className="pageStack">
       <div className="sectionHeading">
         <div>
           <div className="eyebrow">Dashboard</div>
-          <h2>Vault command center</h2>
+          <h2>Document Records</h2>
         </div>
         <button type="button" className="secondaryButton" onClick={() => void onRefresh()}>
           Refresh ledger
@@ -1207,17 +1207,10 @@ function DashboardPage(props: {
         <article className="metricCard">
           <span>Total Documents</span>
           <strong>{metrics.totalDocuments}</strong>
-          <small>{walletAddress ? shortAddr(walletAddress) : 'No wallet connected'}</small>
         </article>
         <article className="metricCard">
           <span>Shared With Me</span>
           <strong>{metrics.sharedWithMe}</strong>
-          <small>{balance ? `${Number(balance).toFixed(3)} ETH available` : 'Wallet balance hidden until connect'}</small>
-        </article>
-        <article className="metricCard">
-          <span>Verified This Month</span>
-          <strong>{metrics.verifiedThisMonth}</strong>
-          <small>Chain proofs with recent timestamps</small>
         </article>
       </div>
 
@@ -1439,14 +1432,120 @@ function SharedPage(props: {
   const filteredDocs = docs.filter((doc) => {
     const query = filter.trim().toLowerCase()
     if (!query) return true
-    return [doc.name, doc.hash, doc.owner ?? '', doc.status, doc.file?.name ?? ''].some((value) => value.toLowerCase().includes(query))
+    return [
+      doc.name,
+      doc.hash,
+      doc.owner ?? '',
+      doc.status ?? '',
+      doc.file?.name ?? '',
+    ].some((value) => value.toLowerCase().includes(query))
   })
+  const pendingDocs = filteredDocs.filter((doc) => !downloadedDocInfo[doc.hash]?.verifiedOnChain)
+  const verifiedDocs = filteredDocs.filter((doc) => !!downloadedDocInfo[doc.hash]?.verifiedOnChain)
 
   function formatFileSize(bytes: number | undefined | null) {
     if (!bytes) return null
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const renderCard = (doc: DocumentSummary) => {
+    const isVerified = !!downloadedDocInfo[doc.hash]?.verifiedOnChain
+    return (
+      <article className="sharedCard" key={doc.hash}>
+        <div className="sharedCardTop">
+          <div>
+            <div className="sharedName">{doc.name}</div>
+            <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
+          </div>
+          <span className={isVerified ? 'statusPill success' : 'statusPill warning'}>
+            {isVerified ? 'hash Verified' : 'Pending'}
+          </span>
+        </div>
+
+        <div className="sharedCardDetails">
+          {doc.file?.name ? (
+            <div className="sharedDetailRow">
+              <span className="sharedDetailLabel">File</span>
+              <span className="sharedDetailValue">{doc.file.name}</span>
+            </div>
+          ) : null}
+          {doc.file?.size ? (
+            <div className="sharedDetailRow">
+              <span className="sharedDetailLabel">Size</span>
+              <span className="sharedDetailValue">{formatFileSize(doc.file.size)}</span>
+            </div>
+          ) : null}
+          {doc.file?.mimetype ? (
+            <div className="sharedDetailRow">
+              <span className="sharedDetailLabel">Type</span>
+              <span className="sharedDetailValue">{doc.file.mimetype}</span>
+            </div>
+          ) : null}
+          {doc.sharedAt ? (
+            <div className="sharedDetailRow">
+              <span className="sharedDetailLabel">Shared on</span>
+              <span className="sharedDetailValue">{new Date(doc.sharedAt).toLocaleDateString()}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <button
+          type="button"
+          className="primaryButton sharedDownload"
+          disabled={doc.status === 'Revoked'}
+          onClick={() => void onDownload(doc.hash, doc.name)}
+        >
+          Download
+        </button>
+
+        <div style={{ textAlign: 'center', marginTop: '12px' }}>
+          <button
+            type="button"
+            className="ghostButton"
+            style={{ width: '100%', borderRadius: '12px', fontSize: '0.85rem' }}
+            onClick={() => toggleExpand(doc.hash)}
+          >
+            {expandedHashes[doc.hash] ? 'View Less ▲' : 'View More ▼'}
+          </button>
+        </div>
+
+        {expandedHashes[doc.hash] ? (
+          <div className="sharedBottomHashes">
+            {downloadedDocInfo[doc.hash] ? (
+              <>
+                <div className="sharedBottomHashRow">
+                  <span className="sharedBottomHashLabel">shared Document hash:</span>
+                  <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].downloadedHash)}>
+                    {shortHash(downloadedDocInfo[doc.hash].downloadedHash)}
+                  </button>
+                </div>
+                <div className="sharedBottomHashRow">
+                  <span className="sharedBottomHashLabel">Registrator hash:</span>
+                  <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].registeredHash)}>
+                    {shortHash(downloadedDocInfo[doc.hash].registeredHash)}
+                  </button>
+                </div>
+                {downloadedDocInfo[doc.hash].verifiedOnChain ? (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
+                    ✓ Hashes match and are verified on blockchain!
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
+                    ⚠ Warning: Downloaded hash does not match blockchain records!
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: '0.82rem', color: 'var(--muted)', textAlign: 'center', padding: '10px 0' }}>
+                Please click "Download" to fetch the document, calculate its hash locally, and verify it on-chain.
+              </div>
+            )}
+          </div>
+        ) : null}
+      </article>
+    )
   }
 
   return (
@@ -1462,21 +1561,6 @@ function SharedPage(props: {
       </div>
 
       {!walletAddress ? <div className="emptyState">Connect MetaMask to view documents shared with you.</div> : null}
-
-      <div className="sharedStatsRow">
-        <div className="sharedStat">
-          <span className="sharedStatValue">{docs.length}</span>
-          <span className="sharedStatLabel">Total shared</span>
-        </div>
-        <div className="sharedStat">
-          <span className="sharedStatValue">{docs.filter(d => d.verified).length}</span>
-          <span className="sharedStatLabel">Verified</span>
-        </div>
-        <div className="sharedStat">
-          <span className="sharedStatValue">{docs.filter(d => d.file?.size).length}</span>
-          <span className="sharedStatLabel">With file info</span>
-        </div>
-      </div>
 
       <div className="sharedSearchBar">
         <input
@@ -1496,101 +1580,42 @@ function SharedPage(props: {
             : 'No shared documents match your search.'}
         </div>
       ) : (
-        <div className="sharedGrid">
-          {filteredDocs.map((doc) => (
-            <article className="sharedCard" key={doc.hash}>
-              <div className="sharedCardTop">
-                <div>
-                  <div className="sharedName">{doc.name}</div>
-                  <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
-                </div>
-                <span className={doc.verified ? 'statusPill success' : 'statusPill warning'}>
-                  {doc.verified ? 'hash Verified' : 'Pending'}
-                </span>
+        <div style={{ display: 'grid', gap: '32px' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '8px', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>Pending</h3>
+              <span style={{ fontSize: '0.85rem', background: 'var(--panel)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: '999px', color: 'var(--muted)' }}>
+                {pendingDocs.length}
+              </span>
+            </div>
+            {pendingDocs.length === 0 ? (
+              <div className="emptyState" style={{ padding: '24px', border: '1px dashed var(--border)', borderRadius: '18px', color: 'var(--muted)' }}>
+                No pending documents.
               </div>
-
-              <div className="sharedCardDetails">
-                {doc.file?.name ? (
-                  <div className="sharedDetailRow">
-                    <span className="sharedDetailLabel">File</span>
-                    <span className="sharedDetailValue">{doc.file.name}</span>
-                  </div>
-                ) : null}
-                {doc.file?.size ? (
-                  <div className="sharedDetailRow">
-                    <span className="sharedDetailLabel">Size</span>
-                    <span className="sharedDetailValue">{formatFileSize(doc.file.size)}</span>
-                  </div>
-                ) : null}
-                {doc.file?.mimetype ? (
-                  <div className="sharedDetailRow">
-                    <span className="sharedDetailLabel">Type</span>
-                    <span className="sharedDetailValue">{doc.file.mimetype}</span>
-                  </div>
-                ) : null}
-                {doc.sharedAt ? (
-                  <div className="sharedDetailRow">
-                    <span className="sharedDetailLabel">Shared on</span>
-                    <span className="sharedDetailValue">{new Date(doc.sharedAt).toLocaleDateString()}</span>
-                  </div>
-                ) : null}
+            ) : (
+              <div className="sharedGrid">
+                {pendingDocs.map(renderCard)}
               </div>
+            )}
+          </div>
 
-              <button
-                type="button"
-                className="primaryButton sharedDownload"
-                disabled={doc.status === 'Revoked'}
-                onClick={() => void onDownload(doc.hash, doc.name)}
-              >
-                Download
-              </button>
-
-              <div style={{ textAlign: 'center', marginTop: '12px' }}>
-                <button
-                  type="button"
-                  className="ghostButton"
-                  style={{ width: '100%', borderRadius: '12px', fontSize: '0.85rem' }}
-                  onClick={() => toggleExpand(doc.hash)}
-                >
-                  {expandedHashes[doc.hash] ? 'View Less ▲' : 'View More ▼'}
-                </button>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '8px', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>Verification</h3>
+              <span style={{ fontSize: '0.85rem', background: 'var(--panel)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: '999px', color: 'var(--muted)' }}>
+                {verifiedDocs.length}
+              </span>
+            </div>
+            {verifiedDocs.length === 0 ? (
+              <div className="emptyState" style={{ padding: '24px', border: '1px dashed var(--border)', borderRadius: '18px', color: 'var(--muted)' }}>
+                No document u have Verified.
               </div>
-
-              {expandedHashes[doc.hash] ? (
-                <div className="sharedBottomHashes">
-                  {downloadedDocInfo[doc.hash] ? (
-                    <>
-                      <div className="sharedBottomHashRow">
-                        <span className="sharedBottomHashLabel">shared Document hash:</span>
-                        <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].downloadedHash)}>
-                          {shortHash(downloadedDocInfo[doc.hash].downloadedHash)}
-                        </button>
-                      </div>
-                      <div className="sharedBottomHashRow">
-                        <span className="sharedBottomHashLabel">Registrator hash:</span>
-                        <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].registeredHash)}>
-                          {shortHash(downloadedDocInfo[doc.hash].registeredHash)}
-                        </button>
-                      </div>
-                      {downloadedDocInfo[doc.hash].verifiedOnChain ? (
-                        <div style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
-                          ✓ Hashes match and are verified on blockchain!
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
-                          ⚠ Warning: Downloaded hash does not match blockchain records!
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div style={{ fontSize: '0.82rem', color: 'var(--muted)', textAlign: 'center', padding: '10px 0' }}>
-                      Please click "Download" to fetch the document, calculate its hash locally, and verify it on-chain.
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </article>
-          ))}
+            ) : (
+              <div className="sharedGrid">
+                {verifiedDocs.map(renderCard)}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </section>
