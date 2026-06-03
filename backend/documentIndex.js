@@ -2,12 +2,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
+import { getCollection } from "./mongoStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const STORE_PATH = path.join(DATA_DIR, "documents.json");
 
 let writeQueue = Promise.resolve();
+
+const DOCUMENTS_COLLECTION = "documents";
 
 // MongoDB removed: always use local JSON store for document index
 
@@ -53,11 +56,26 @@ export async function getDocument(hash) {
   }
 
   const key = normalizeHash(hash);
+
+  if (config.storageMode === "mongo") {
+    const collection = await getCollection(DOCUMENTS_COLLECTION);
+    const record = await collection.findOne({ _id: key });
+    if (!record) return null;
+    const { _id, ...rest } = record;
+    return rest;
+  }
+
   const store = await loadStore();
   return store.documents[key] ?? null;
 }
 
 export async function listDocuments() {
+  if (config.storageMode === "mongo") {
+    const collection = await getCollection(DOCUMENTS_COLLECTION);
+    const docs = await collection.find({}).toArray();
+    return docs.map(({ _id, ...rest }) => rest);
+  }
+
   const store = await loadStore();
   return Object.values(store.documents);
 }
@@ -78,6 +96,16 @@ export async function putDocument(document) {
     updatedAt: Date.now(),
   };
 
+  if (config.storageMode === "mongo") {
+    const collection = await getCollection(DOCUMENTS_COLLECTION);
+    await collection.updateOne(
+      { _id: key },
+      { $set: nextDocument },
+      { upsert: true }
+    );
+    return nextDocument;
+  }
+
   writeQueue = writeQueue.then(async () => {
     const store = await loadStore();
     store.documents[key] = nextDocument;
@@ -86,4 +114,31 @@ export async function putDocument(document) {
 
   await writeQueue;
   return nextDocument;
+}
+
+export async function deleteDocument(hash) {
+  if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
+    throw new Error("deleteDocument: invalid hash");
+  }
+
+  const key = normalizeHash(hash);
+
+  if (config.storageMode === "mongo") {
+    const collection = await getCollection(DOCUMENTS_COLLECTION);
+    const result = await collection.deleteOne({ _id: key });
+    return result.deletedCount > 0;
+  }
+
+  let deleted = false;
+  writeQueue = writeQueue.then(async () => {
+    const store = await loadStore();
+    if (store.documents[key]) {
+      delete store.documents[key];
+      deleted = true;
+      await saveStore(store);
+    }
+  });
+
+  await writeQueue;
+  return deleted;
 }

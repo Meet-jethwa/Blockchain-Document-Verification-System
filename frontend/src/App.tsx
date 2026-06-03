@@ -2,7 +2,7 @@ import './App.css'
 import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
-import { fetchDocuments, fetchProfile, postFileWithProgress, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
+import { fetchDocuments, fetchProfile, fetchSharedDocuments, postFileWithProgress, recordSharedDocument, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -42,6 +42,7 @@ const DOCUMENT_REGISTRY_ABI = [
   'function registerDocument(bytes32 hash, string cid) external',
   'function revokeDocument(bytes32 hash) external',
   'function grantViewer(bytes32 hash, address viewer) external',
+  'function revokeViewer(bytes32 hash, address viewer) external',
   'function getMyDocuments() external view returns (bytes32[] memory)',
   'function getDocumentMeta(bytes32 hash) external view returns (address owner, uint256 createdAt)',
   'function verifyDocument(bytes32 hash) external view returns (bool)',
@@ -149,9 +150,7 @@ function downloadBytes(bytes: Uint8Array, filename: string, mimetype: string) {
 
 async function extractHash(file: File) {
   const buffer = await file.arrayBuffer()
-  const digest = await window.crypto.subtle.digest('SHA-256', buffer)
-  const bytes = new Uint8Array(digest)
-  return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+  return ethers.keccak256(new Uint8Array(buffer))
 }
 
 async function fetchBackendHealth() {
@@ -163,12 +162,25 @@ async function fetchBackendHealth() {
 }
 
 async function fetchDocumentDownload(hash: string, walletAddress: string) {
-  const response = await fetch(`/api/documents/${hash}/download`, {
-    method: 'GET',
-    headers: {
-      'wallet-address': walletAddress,
-    },
-  })
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 90000)
+  let response: Response
+  try {
+    response = await fetch(`/api/documents/${hash}/download`, {
+      method: 'GET',
+      headers: {
+        'wallet-address': walletAddress,
+      },
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Download timed out. Please retry and check backend/RPC connectivity.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
   if (!response.ok) {
     const message = await response.text().catch(() => '')
     throw new Error(message || `Download failed (${response.status})`)
@@ -200,6 +212,8 @@ function App() {
   const [uploadMessage, setUploadMessage] = useState('')
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [sharedDocs, setSharedDocs] = useState<DocumentSummary[]>([])
+  const [sharedFilter, setSharedFilter] = useState('')
+  const [sharedLoading, setSharedLoading] = useState(false)
   const [verifyPreview, setVerifyPreview] = useState<VerifyPreview | null>(null)
   const [verifyBusy, setVerifyBusy] = useState(false)
   const [profile, setProfile] = useState<ProfileState | null>(null)
@@ -489,6 +503,19 @@ function App() {
     }
   }
 
+  async function loadSharedDocs() {
+    if (!walletAddress) return
+    setSharedLoading(true)
+    try {
+      const result = await fetchSharedDocuments(walletAddress)
+      setSharedDocs(result.shared)
+    } catch (error) {
+      pushToast('Shared docs load failed', error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setSharedLoading(false)
+    }
+  }
+
   async function registerSelectedDocument() {
     if (!uploadFile) {
       pushToast('No file selected', 'Choose a file before registering it.', 'warning')
@@ -620,6 +647,19 @@ function App() {
       const tx = await contract.grantViewer(shareDialog.doc.hash, shareDialog.viewer)
       pushToast('Share pending', `${shortAddr(shareDialog.viewer)} will receive access after confirmation.`, 'info')
       await tx.wait()
+      try {
+        await recordSharedDocument(shareDialog.viewer, {
+          hash: shareDialog.doc.hash,
+          name: shareDialog.doc.name,
+          owner: shareDialog.doc.owner,
+          createdAt: shareDialog.doc.createdAt,
+          cid: shareDialog.doc.cid,
+        })
+      } catch (recordError) {
+        // Non-fatal: on-chain sharing succeeded, local share index can be refreshed later.
+        // eslint-disable-next-line no-console
+        console.warn('Failed to record shared document locally', recordError)
+      }
       pushToast('Access granted', `${shareDialog.doc.name} shared with ${shortAddr(shareDialog.viewer)}.`, 'success')
       setShareDialog({ open: false, doc: null, viewer: '', busy: false })
     } catch (error) {
@@ -628,9 +668,54 @@ function App() {
     }
   }
 
+  async function submitRevokeShareDialog() {
+    if (!shareDialog.doc) return
+    if (!walletAddress) {
+      pushToast('Wallet required', 'Connect your wallet to revoke shared access.', 'warning')
+      return
+    }
+    if (!ethers.isAddress(shareDialog.viewer)) {
+      pushToast('Invalid viewer', 'Enter a valid wallet address to revoke access.', 'warning')
+      return
+    }
+
+    setShareDialog((current) => ({ ...current, busy: true }))
+    try {
+      const address = await ensureContractAddress()
+      const ethereum = window.ethereum
+      if (!ethereum) throw new Error('Wallet provider unavailable')
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+      const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
+      const tx = await contract.revokeViewer(shareDialog.doc.hash, shareDialog.viewer)
+      pushToast('Revoke pending', `${shortAddr(shareDialog.viewer)} will lose access after confirmation.`, 'info')
+      await tx.wait()
+      try {
+        await fetch('/api/shared-record', {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'wallet-address': String(walletAddress),
+          },
+          body: JSON.stringify({ hash: shareDialog.doc.hash, viewerAddress: shareDialog.viewer }),
+        })
+      } catch (deleteError) {
+        // Non-fatal: on-chain revoke succeeded; local cleanup can be retried later.
+        // eslint-disable-next-line no-console
+        console.warn('Backend shared-record delete failed after on-chain revoke', deleteError)
+      }
+      pushToast('Access revoked', `${shortAddr(shareDialog.viewer)} can no longer access this document.`, 'success')
+      setShareDialog({ open: false, doc: null, viewer: '', busy: false })
+      await refreshDashboardDocs()
+    } catch (error) {
+      pushToast('Revoke failed', error instanceof Error ? error.message : String(error), 'error')
+      setShareDialog((current) => ({ ...current, busy: false }))
+    }
+  }
+
   async function revokeDocument(hash: string) {
     if (!walletAddress) {
-      pushToast('Wallet required', 'Connect your wallet to revoke a document.', 'warning')
+      pushToast('Wallet required', 'Connect your wallet to delete a document.', 'warning')
       return
     }
     try {
@@ -641,13 +726,26 @@ function App() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
       const tx = await contract.revokeDocument(hash)
-      pushToast('Revocation pending', shortHash(hash), 'info')
+      pushToast('Delete pending', shortHash(hash), 'info')
       await tx.wait()
-      pushToast('Document revoked', shortHash(hash), 'success')
+      try {
+        await fetch(`/api/documents/${hash}`, {
+          method: 'DELETE',
+          headers: {
+            'wallet-address': String(walletAddress),
+          },
+        })
+      } catch (deleteError) {
+        // Non-fatal: chain delete succeeded; local cleanup may still happen later.
+        // eslint-disable-next-line no-console
+        console.warn('Backend delete failed after on-chain revoke', deleteError)
+      }
+      pushToast('Document deleted', shortHash(hash), 'success')
       setDashboardDocs((current) => current.filter((doc) => doc.hash !== hash))
+      setSharedDocs((current) => current.filter((doc) => doc.hash !== hash))
       await refreshDashboardDocs()
     } catch (error) {
-      pushToast('Revoke failed', error instanceof Error ? error.message : String(error), 'error')
+      pushToast('Delete failed', error instanceof Error ? error.message : String(error), 'error')
     }
   }
 
@@ -726,8 +824,12 @@ function App() {
         {activePage === 'shared' && (
           <SharedPage
             docs={sharedDocs}
+            filter={sharedFilter}
+            loading={sharedLoading}
             onDownload={downloadDocument}
-            onRefresh={() => void refreshDashboardDocs()}
+            onFilterChange={setSharedFilter}
+            onRefresh={() => void loadSharedDocs()}
+            walletAddress={walletAddress}
           />
         )}
 
@@ -787,6 +889,9 @@ function App() {
             <div className="shareModalActions">
               <button type="button" className="secondaryButton" onClick={closeShareDialog} disabled={shareDialog.busy}>
                 Cancel
+              </button>
+              <button type="button" className="ghostButton dangerButton" onClick={() => void submitRevokeShareDialog()} disabled={shareDialog.busy || !shareDialog.viewer.trim()}>
+                {shareDialog.busy ? 'Revoking...' : 'Revoke access'}
               </button>
               <button type="button" className="primaryButton" onClick={() => void submitShareDialog()} disabled={shareDialog.busy || !shareDialog.viewer.trim()}>
                 {shareDialog.busy ? 'Sharing...' : 'Share access'}
@@ -1130,7 +1235,7 @@ function DashboardPage(props: {
                           Share
                         </button>
                         <button type="button" className="ghostButton dangerButton" disabled={doc.status === 'Revoked'} onClick={() => void onRevoke(doc.hash)}>
-                          Revoke
+                          Delete
                         </button>
                       </div>
                     </td>
@@ -1218,40 +1323,143 @@ function UploadPage(props: {
   )
 }
 
-function SharedPage(props: { docs: DocumentSummary[]; onDownload: (hash: string, name: string) => Promise<void>; onRefresh: () => void }) {
-  const { docs, onDownload, onRefresh } = props
+function SharedPage(props: {
+  docs: DocumentSummary[]
+  filter: string
+  loading: boolean
+  onDownload: (hash: string, name: string) => Promise<void>
+  onFilterChange: (value: string) => void
+  onRefresh: () => void
+  walletAddress: string | null
+}) {
+  const { docs, filter, loading, onDownload, onFilterChange, onRefresh, walletAddress } = props
+
+  const filteredDocs = docs.filter((doc) => {
+    const query = filter.trim().toLowerCase()
+    if (!query) return true
+    return [doc.name, doc.hash, doc.owner ?? '', doc.status, doc.file?.name ?? ''].some((value) => value.toLowerCase().includes(query))
+  })
+
+  function formatFileSize(bytes: number | undefined | null) {
+    if (!bytes) return null
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
   return (
     <section className="pageStack">
       <div className="sectionHeading">
         <div>
           <div className="eyebrow">Shared With Me</div>
-          <h2>Inbox-style document feed</h2>
+          <h2>Documents shared to your wallet</h2>
         </div>
         <button type="button" className="secondaryButton" onClick={onRefresh}>
           Refresh inbox
         </button>
       </div>
 
-      <div className="sharedGrid">
-        {docs.map((doc) => (
-          <article className="sharedCard" key={doc.hash}>
-            <div className="sharedCardTop">
-              <div>
-                <div className="sharedName">{doc.name}</div>
-                <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
-              </div>
-              <div className="statusPillText">{shortHash(doc.hash)}</div>
-            </div>
-            <div className="sharedMetaRow">
-              <span>Recorded {formatUnixSeconds(doc.createdAt ? Math.floor(doc.createdAt / 1000) : null)}</span>
-              <span className={doc.verified ? 'statusPill success' : 'statusPill warning'}>{doc.verified ? 'Verified ✓' : 'Pending'}</span>
-            </div>
-            <button type="button" className="primaryButton sharedDownload" onClick={() => void onDownload(doc.hash, doc.name)}>
-              Download
-            </button>
-          </article>
-        ))}
+      {!walletAddress ? <div className="emptyState">Connect MetaMask to view documents shared with you.</div> : null}
+
+      <div className="sharedStatsRow">
+        <div className="sharedStat">
+          <span className="sharedStatValue">{docs.length}</span>
+          <span className="sharedStatLabel">Total shared</span>
+        </div>
+        <div className="sharedStat">
+          <span className="sharedStatValue">{docs.filter(d => d.verified).length}</span>
+          <span className="sharedStatLabel">Verified</span>
+        </div>
+        <div className="sharedStat">
+          <span className="sharedStatValue">{docs.filter(d => d.file?.size).length}</span>
+          <span className="sharedStatLabel">With file info</span>
+        </div>
       </div>
+
+      <div className="sharedSearchBar">
+        <input
+          className="textInput filterInput"
+          value={filter}
+          onChange={(event) => onFilterChange(event.target.value)}
+          placeholder="Search by name, hash, owner, or filename…"
+        />
+      </div>
+
+      {loading ? (
+        <div className="emptyState">Loading shared documents from MongoDB…</div>
+      ) : filteredDocs.length === 0 ? (
+        <div className="emptyState">
+          {docs.length === 0
+            ? 'No documents have been shared with your wallet yet.'
+            : 'No shared documents match your search.'}
+        </div>
+      ) : (
+        <div className="sharedGrid">
+          {filteredDocs.map((doc) => (
+            <article className="sharedCard" key={doc.hash}>
+              <div className="sharedCardTop">
+                <div>
+                  <div className="sharedName">{doc.name}</div>
+                  <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
+                </div>
+                <span className={doc.verified ? 'statusPill success' : 'statusPill warning'}>
+                  {doc.verified ? 'Verified ✓' : 'Pending'}
+                </span>
+              </div>
+
+              <div className="sharedCardDetails">
+                <div className="sharedDetailRow">
+                  <span className="sharedDetailLabel">Hash</span>
+                  <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
+                    {shortHash(doc.hash)}
+                  </button>
+                </div>
+                {doc.file?.name ? (
+                  <div className="sharedDetailRow">
+                    <span className="sharedDetailLabel">File</span>
+                    <span className="sharedDetailValue">{doc.file.name}</span>
+                  </div>
+                ) : null}
+                {doc.file?.size ? (
+                  <div className="sharedDetailRow">
+                    <span className="sharedDetailLabel">Size</span>
+                    <span className="sharedDetailValue">{formatFileSize(doc.file.size)}</span>
+                  </div>
+                ) : null}
+                {doc.file?.mimetype ? (
+                  <div className="sharedDetailRow">
+                    <span className="sharedDetailLabel">Type</span>
+                    <span className="sharedDetailValue">{doc.file.mimetype}</span>
+                  </div>
+                ) : null}
+                <div className="sharedDetailRow">
+                  <span className="sharedDetailLabel">Recorded</span>
+                  <span className="sharedDetailValue">{formatUnixSeconds(doc.createdAt ? Math.floor(doc.createdAt / 1000) : null)}</span>
+                </div>
+                {doc.sharedAt ? (
+                  <div className="sharedDetailRow">
+                    <span className="sharedDetailLabel">Shared on</span>
+                    <span className="sharedDetailValue">{new Date(doc.sharedAt).toLocaleDateString()}</span>
+                  </div>
+                ) : null}
+                <div className="sharedDetailRow">
+                  <span className="sharedDetailLabel">Status</span>
+                  <span className={`statusPill ${doc.status === 'Revoked' ? 'danger' : 'success'}`}>{doc.status}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="primaryButton sharedDownload"
+                disabled={doc.status === 'Revoked'}
+                onClick={() => void onDownload(doc.hash, doc.name)}
+              >
+                Download
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   )
 }

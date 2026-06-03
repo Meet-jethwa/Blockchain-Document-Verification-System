@@ -246,9 +246,11 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
   // Normalize address to checksum format (ensures valid format)
   const normalizedAddress = ethers.getAddress(contractAddress);
   
-  // Create contract instance - combination of ABI + address + wallet
-  // This allows us to call contract functions as if they were JavaScript functions
-  const contract = new ethers.Contract(normalizedAddress, DOCUMENT_REGISTRY_ABI, wallet);
+	// Create separate contract instances for reads and writes.
+	// Read calls use the provider so we can supply `from` overrides for msg.sender-dependent views.
+	// Write calls use the wallet so transactions can be signed.
+	const readContract = new ethers.Contract(normalizedAddress, DOCUMENT_REGISTRY_ABI, provider);
+	const writeContract = new ethers.Contract(normalizedAddress, DOCUMENT_REGISTRY_ABI, wallet);
 
   // Flag to track if we've verified the contract exists (optimization - only check once)
   let contractChecked = false;
@@ -295,6 +297,11 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 	let cachedRegistrationLogs = [];
 	let cachedRegistrationLatestBlock = -1;
 
+	// To avoid scanning the entire chain on first run (which can be millions of blocks),
+	// only scan the most recent N blocks initially. This keeps development/debug runs
+	// and managed RPC providers responsive. Increase if you need full historical indexing.
+	const INITIAL_SCAN_BACKLOG = 10000; // scan up to the last 10k blocks on cold start
+
 	async function getLogsInChunks({ topics, fromBlock = 0, toBlock }) {
 		const startBlock = Number(fromBlock);
 		const endBlock = Number(toBlock ?? (await provider.getBlockNumber()));
@@ -324,26 +331,38 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 
 	async function getDocumentRegisteredLogs() {
 		const latestBlock = await provider.getBlockNumber();
-		const fragment = contract.interface.getEvent('DocumentRegistered');
+		const fragment = readContract.interface.getEvent('DocumentRegistered');
+		// Compute topic hash for the event signature. `ethers.id` returns keccak256 of the string.
+		const eventTopic = ethers.id('DocumentRegistered(bytes32,address,string)');
 		if (cachedRegistrationLatestBlock > latestBlock) {
 			cachedRegistrationLogs = [];
 			cachedRegistrationLatestBlock = -1;
 		}
 
-		const fromBlock = cachedRegistrationLatestBlock >= 0 ? cachedRegistrationLatestBlock + 1 : 0;
-		const freshLogs = fromBlock <= latestBlock
-			? await getLogsInChunksRange({
-				topics: [fragment.topicHash],
-				fromBlock,
-				toBlock: latestBlock,
-			})
-			: [];
+		const fromBlock = cachedRegistrationLatestBlock >= 0
+			? cachedRegistrationLatestBlock + 1
+			: Math.max(0, latestBlock - INITIAL_SCAN_BACKLOG);
+		let freshLogs = [];
+		if (fromBlock <= latestBlock) {
+			try {
+				freshLogs = await getLogsInChunksRange({
+					topics: [eventTopic],
+					fromBlock,
+					toBlock: latestBlock,
+				});
+			} catch (err) {
+				// Log and continue; avoid throwing to callers so they can handle gracefully
+				// eslint-disable-next-line no-console
+				console.warn('getDocumentRegisteredLogs: getLogsInChunksRange failed', String(err));
+				freshLogs = [];
+			}
+		}
 
 		if (freshLogs.length > 0 || cachedRegistrationLogs.length === 0) {
 			const decodedFreshLogs = freshLogs
 			.map((log) => {
 				try {
-					const decoded = contract.interface.decodeEventLog(fragment, log.data, log.topics);
+					const decoded = readContract.interface.decodeEventLog(fragment, log.data, log.topics);
 					const hash = decoded?.hash ?? decoded?.[0] ?? null;
 					const owner = decoded?.owner ?? decoded?.[1] ?? null;
 					const cid = decoded?.cid ?? decoded?.[2] ?? null;
@@ -366,11 +385,79 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		return cachedRegistrationLogs;
 	}
 
+	async function getViewerGrantedLogs(viewerAddress) {
+		await assertContractDeployed();
+		const normalizedViewer = ethers.getAddress(viewerAddress);
+		const signature = 'ViewerAccessGranted(bytes32,address,address)';
+		const fragment = readContract.interface.getEvent(signature);
+		const eventTopic = ethers.id(signature);
+		const latestBlock = await provider.getBlockNumber();
+		const fromBlock = Math.max(0, latestBlock - INITIAL_SCAN_BACKLOG);
+		const logs = await getLogsInChunks({
+			topics: [eventTopic, null, null, ethers.zeroPadValue(normalizedViewer, 32)],
+			fromBlock,
+			toBlock: latestBlock,
+		});
+
+		return logs
+			.map((log) => {
+				try {
+					const decoded = readContract.interface.decodeEventLog(fragment, log.data, log.topics);
+					const hash = decoded?.hash ?? decoded?.[0] ?? null;
+					const owner = decoded?.owner ?? decoded?.[1] ?? null;
+					const viewer = decoded?.viewer ?? decoded?.[2] ?? null;
+					return {
+						hash: typeof hash === 'string' ? hash : null,
+						owner: typeof owner === 'string' ? owner : null,
+						viewer: typeof viewer === 'string' ? viewer : null,
+						blockNumber: log.blockNumber ?? null,
+					};
+				} catch {
+					return null;
+				}
+			})
+			.filter((entry) => entry && typeof entry.hash === 'string' && entry.hash.startsWith('0x') && entry.hash.length === 66);
+	}
+
+	async function getRootViewerGrantedLogs(viewerAddress) {
+		await assertContractDeployed();
+		const normalizedViewer = ethers.getAddress(viewerAddress);
+		const signature = 'RootViewerAccessGranted(bytes32,address,address)';
+		const fragment = readContract.interface.getEvent(signature);
+		const eventTopic = ethers.id(signature);
+		const latestBlock = await provider.getBlockNumber();
+		const fromBlock = Math.max(0, latestBlock - INITIAL_SCAN_BACKLOG);
+		const logs = await getLogsInChunks({
+			topics: [eventTopic, null, null, ethers.zeroPadValue(normalizedViewer, 32)],
+			fromBlock,
+			toBlock: latestBlock,
+		});
+
+		return logs
+			.map((log) => {
+				try {
+					const decoded = readContract.interface.decodeEventLog(fragment, log.data, log.topics);
+					const rootHash = decoded?.rootHash ?? decoded?.[0] ?? null;
+					const owner = decoded?.owner ?? decoded?.[1] ?? null;
+					const viewer = decoded?.viewer ?? decoded?.[2] ?? null;
+					return {
+						rootHash: typeof rootHash === 'string' ? rootHash : null,
+						owner: typeof owner === 'string' ? owner : null,
+						viewer: typeof viewer === 'string' ? viewer : null,
+						blockNumber: log.blockNumber ?? null,
+					};
+				} catch {
+					return null;
+				}
+			})
+			.filter((entry) => entry && typeof entry.rootHash === 'string' && entry.rootHash.startsWith('0x') && entry.rootHash.length === 66);
+	}
+
   // Return object with all blockchain interaction methods
   return {
     provider,  // Expose provider for health checks
     wallet,    // Expose wallet to show which address is being used
-    contract,  // Expose contract for advanced usage
+	contract: readContract,  // Expose read-only contract for advanced usage
     
     /**
      * Registers a document hash on the blockchain
@@ -392,7 +479,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
       // Pre-checking saves money - failed transactions still cost gas!
       let exists;
       try {
-        exists = await contract.verifyDocument(hash);
+		exists = await writeContract.verifyDocument(hash);
       } catch (err) {
         rethrowAbiMismatch(err);
       }
@@ -402,7 +489,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
       
       // Send transaction to blockchain
 			// This returns immediately with a pending transaction object
-			const tx = await contract.registerDocument(hash, cid);
+			const tx = await writeContract.registerDocument(hash, cid);
       
 			// Wait for transaction to be mined (included in a block)
 			// This can take seconds to minutes depending on network congestion
@@ -421,7 +508,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
     async verifyDocumentHash(hash) {
       await assertContractDeployed();
       try {
-        return await contract.verifyDocument(hash);
+		return await readContract.verifyDocument(hash);
       } catch (err) {
         rethrowAbiMismatch(err);
       }
@@ -434,7 +521,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async canViewDocument(hash, userAddress) {
 			await assertContractDeployed();
 			try {
-				return await contract.canViewDocument(hash, userAddress);
+				return await readContract.canViewDocument(hash, userAddress);
 			} catch (err) {
 				rethrowAbiMismatch(err);
 			}
@@ -448,10 +535,13 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
      * 
      * EXPLANATION: Gets all metadata stored on-chain for a document
      */
-    async getDocument(hash) {
+		async getDocument(hash, callerAddress = null) {
       await assertContractDeployed();
       try {
-				const [owner, cid, createdAt] = await contract.getDocument(hash);
+				const overrides = callerAddress ? { from: callerAddress } : undefined;
+				const [owner, cid, createdAt] = overrides
+					? await readContract.getDocument(hash, overrides)
+					: await readContract.getDocument(hash);
         return { owner, cid, createdAt };
       } catch (err) {
         rethrowAbiMismatch(err);
@@ -466,7 +556,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async getDocumentMeta(hash) {
 			await assertContractDeployed();
 			try {
-				const [owner, createdAt] = await contract.getDocumentMeta(hash);
+				const [owner, createdAt] = await readContract.getDocumentMeta(hash);
 				return { owner, createdAt };
 			} catch (err) {
 				rethrowAbiMismatch(err);
@@ -479,7 +569,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 				const registrations = await getDocumentRegisteredLogs();
 				const log = registrations.find((entry) => entry.hash.toLowerCase() === String(hash).toLowerCase());
 				if (!log) return null;
-				const [owner, createdAt] = await contract.getDocumentMeta(hash);
+				const [owner, createdAt] = await readContract.getDocumentMeta(hash);
 				return {
 					owner,
 					createdAt,
@@ -511,6 +601,22 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 			}
 		},
 
+		async listSharedDocuments(viewerAddress) {
+			await assertContractDeployed();
+			try {
+				const [directShares, rootShares] = await Promise.all([
+					getViewerGrantedLogs(viewerAddress),
+					getRootViewerGrantedLogs(viewerAddress),
+				]);
+				const rootHashSet = new Set(rootShares.map((entry) => entry.rootHash.toLowerCase()));
+				const rootDocs = rootHashSet.size === 0 ? [] : await Promise.all([...rootHashSet].map((rootHash) => readContract.getDocumentVersions(rootHash).catch(() => [])));
+				const rootVersionHashes = rootDocs.flat().map((hashValue) => String(hashValue));
+				return Array.from(new Set([...directShares.map((entry) => entry.hash), ...rootVersionHashes]));
+			} catch (err) {
+				rethrowAbiMismatch(err);
+			}
+		},
+
 		/**
 		 * Checks existence regardless of revocation.
 		 * (verifyDocument() may be false for revoked documents.)
@@ -518,7 +624,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async documentExists(hash) {
 			await assertContractDeployed();
 			try {
-				await contract.getDocumentMeta(hash);
+				await readContract.getDocumentMeta(hash);
 				return true;
 			} catch (err) {
 				// If it's an ABI mismatch, surface it. Otherwise treat as non-existent.
@@ -532,7 +638,7 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 		async isDocumentRevoked(hash) {
 			await assertContractDeployed();
 			try {
-				return await contract.isDocumentRevoked(hash);
+				return await readContract.isDocumentRevoked(hash);
 			} catch (err) {
 				rethrowAbiMismatch(err);
 			}
@@ -541,24 +647,30 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 }
 
 /**
- * Computes the SHA-256 hash of a file buffer
- * @param {Buffer} buffer - File contents as Buffer
- * @returns {string} 0x-prefixed bytes32 hex string (66 characters total)
- * 
- * EXPLANATION FOR PROFESSOR:
- * - SHA-256 is the standard hashing algorithm used for document integrity checks
- * - Input: Any sized file → Output: Always 32 bytes (256 bits) = 64 hex characters
- * - Same file = same hash, Different file = completely different hash
- * - Even 1 bit change in file produces completely different hash (avalanche effect)
- * - This is a one-way function: hash cannot be reversed to get original file
- * Example hash: 0x1234...abcd (0x prefix + 64 hex chars = 66 total chars)
+ * Computes the keccak256 hash of a file buffer (0x-prefixed bytes32 hex string).
+ * Historically the project used SHA-256; the code now prefers keccak256 to match
+ * on-chain usage. A legacy SHA-256 helper is available as
+ * `hashFileSha256Legacy` for compatibility with older registrations.
  */
 export function hashFileSha256(buffer) {
-	return `0x${createHash("sha256").update(buffer).digest("hex")}`;
+	// Historically this project used SHA-256; switch to keccak256 to match
+	// on-chain semantics in the paper. Keep the exported name for
+	// compatibility with the rest of the codebase.
+	const bytes = Buffer.isBuffer(buffer) ? Uint8Array.from(buffer) : Uint8Array.from(Buffer.from(buffer));
+	return ethers.keccak256(bytes);
 }
 
 export function hashFileKeccak256(buffer) {
 	return hashFileSha256(buffer);
+}
+
+/**
+ * Legacy SHA-256 hash function kept for compatibility with older
+ * on-chain registrations. Returns 0x-prefixed 32-byte hex string.
+ */
+export function hashFileSha256Legacy(buffer) {
+	const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+	return `0x${createHash("sha256").update(buf).digest("hex")}`;
 }
 
 

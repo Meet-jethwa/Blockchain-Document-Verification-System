@@ -119,6 +119,13 @@ export const config = {
   // Optional: used to encrypt per-document file keys/IVs at rest (NOT used for the file encryption itself)
   // Accepts 32-byte hex (with or without 0x) or 32-byte base64
   fileMasterKey: getOptional("FILE_MASTER_KEY"),
+
+  // Storage backend for document/share indices.
+  // - json: local filesystem files under backend/data (good for local dev)
+  // - mongo: MongoDB (recommended for deployment)
+  storageMode: (getOptional("STORAGE_MODE", "json") || "json").toLowerCase(),
+  mongoUri: getOptional("MONGODB_URI"),
+  mongoDbName: getOptional("MONGODB_DB", "bdvs"),
 };
 
 

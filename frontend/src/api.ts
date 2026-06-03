@@ -67,11 +67,36 @@ export type DocumentSummary = {
   status: 'Registered' | 'Revoked'
   cid: string | null
   access: 'owned' | 'shared'
+  file?: { name: string; mimetype: string; size: number } | null
+  sharedAt?: number | null
 }
 
 export type DocumentCollections = {
   owned: DocumentSummary[]
   shared: DocumentSummary[]
+}
+
+export async function fetchSharedDocuments(walletAddress: string): Promise<{ shared: DocumentSummary[] }> {
+  return requestJson<{ shared: DocumentSummary[] }>('/api/shared-documents', {
+    method: 'GET',
+    headers: {
+      'wallet-address': walletAddress,
+    },
+  })
+}
+
+export async function recordSharedDocument(
+  walletAddress: string,
+  document: Pick<DocumentSummary, 'hash' | 'name' | 'owner' | 'createdAt' | 'cid'>,
+): Promise<{ shared: DocumentSummary }> {
+  return requestJson<{ shared: DocumentSummary }>('/api/shared-record', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'wallet-address': walletAddress,
+    },
+    body: JSON.stringify(document),
+  })
 }
 
 async function parseJsonSafely(res: Response) {

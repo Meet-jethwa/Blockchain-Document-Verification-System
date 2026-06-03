@@ -21,8 +21,9 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { config } from "./config.js";
-import { makeChainClient, hashFileSha256 } from "./chain.js";
-import { getDocument as getStoredDocument, listDocuments, putDocument } from "./documentIndex.js";
+import { makeChainClient, hashFileSha256, hashFileSha256Legacy } from "./chain.js";
+import { getDocument as getStoredDocument, listDocuments, putDocument, deleteDocument as deleteStoredDocument } from "./documentIndex.js";
+import { listSharedDocuments as listSharedStoreDocuments, listSharedDocumentsEnriched, putSharedDocument, deleteSharedDocument, deleteSharedDocumentForViewer } from "./sharedStore.js";
 import { pickIpfsUploader } from "./ipfs.js";
 import { encryptFile, decryptFile } from "./fileCrypto.js";
 import { createDefaultProfile, getProfile, putProfile } from "./profileStore.js";
@@ -185,25 +186,74 @@ async function mapInBatches(items, batchSize, worker) {
 
 async function summarizeAccessibleDocuments(walletAddress) {
   const lowerWallet = String(walletAddress).toLowerCase();
-  const onChainDocuments = await chain.listRegisteredDocuments();
-  const onChainHashes = onChainDocuments.map((doc) => doc.hash).filter(Boolean);
+  // Fetch owned hashes and shared hashes separately.
+  // Owned docs come from the caller-scoped view; shared docs come from the local share index.
+  let ownedDocuments = [];
+  let sharedDocuments = [];
+  try {
+    // eslint-disable-next-line no-console
+    console.info('summarizeAccessibleDocuments: fetching getMyDocuments() for caller');
+    const myHashes = (await Promise.race([
+      chain.contract.getMyDocuments({ from: walletAddress }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('getMyDocuments timeout')), 20000)),
+    ])) || [];
+    ownedDocuments = myHashes.map((hashValue) => ({ hash: typeof hashValue === 'string' ? hashValue : String(hashValue) }));
+    // eslint-disable-next-line no-console
+    console.info(`summarizeAccessibleDocuments: getMyDocuments() returned ${ownedDocuments.length} hashes`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('getMyDocuments failed, falling back to listRegisteredDocuments:', err);
+    try {
+      ownedDocuments = await chain.listRegisteredDocuments();
+      // eslint-disable-next-line no-console
+      console.info(`summarizeAccessibleDocuments: fallback scan found ${ownedDocuments.length} registered documents`);
+    } catch (scanErr) {
+      // eslint-disable-next-line no-console
+      console.warn('listRegisteredDocuments failed:', scanErr);
+      ownedDocuments = [];
+    }
+  }
+  try {
+    // eslint-disable-next-line no-console
+    console.info(`summarizeAccessibleDocuments: fetching shared documents from local index for ${walletAddress}`);
+    sharedDocuments = await listSharedStoreDocuments(walletAddress);
+    // eslint-disable-next-line no-console
+    console.info(`summarizeAccessibleDocuments: local share index returned ${sharedDocuments.length} hashes`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('shared document index failed:', err);
+    sharedDocuments = [];
+  }
+
+  const ownedHashes = ownedDocuments.map((doc) => doc.hash).filter(Boolean);
+  const sharedHashes = sharedDocuments.map((doc) => doc.hash).filter(Boolean);
   const localDocuments = await listDocuments();
   const localHashes = localDocuments.map((doc) => doc.hash).filter(Boolean);
-  const hashes = Array.from(new Set([...onChainHashes, ...localHashes]));
+  const hashes = Array.from(new Set([...ownedHashes, ...sharedHashes, ...localHashes]));
   const localByHash = new Map(localDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
-  const onChainByHash = new Map(onChainDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
+  const ownedByHash = new Map(ownedDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
+  const sharedByHash = new Map(sharedDocuments.map((doc) => [String(doc.hash).toLowerCase(), doc]));
 
-  const summaries = await mapInBatches(hashes, 5, async (hash) => {
+  // eslint-disable-next-line no-console
+  console.info(`summarizeAccessibleDocuments: hydrating ${hashes.length} hashes (batches of 5)`);
+  let summaries;
+  try {
+    summaries = await mapInBatches(hashes, 5, async (hash) => {
     const [meta, revoked, canView] = await Promise.all([
       chain.getDocumentMeta(hash).catch(() => null),
       chain.isDocumentRevoked(hash).catch(() => null),
       chain.canViewDocument(hash, walletAddress).catch(() => null),
     ]);
 
-    const onChainDoc = onChainByHash.get(String(hash).toLowerCase()) ?? null;
-    const owner = meta?.owner ?? onChainDoc?.owner ?? null;
+    const normalizedHash = String(hash).toLowerCase();
+    const ownedDoc = ownedByHash.get(normalizedHash) ?? null;
+    const sharedDoc = sharedByHash.get(normalizedHash) ?? null;
+    const localDoc = localByHash.get(normalizedHash) ?? null;
+    const owner = meta?.owner ?? ownedDoc?.owner ?? sharedDoc?.owner ?? localDoc?.owner ?? null;
     const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
-    const allowed = Boolean(canView) || !!ownerMatches;
+    // If the local shared index contains this hash for the caller, trust it
+    // even if the contract view `canViewDocument` is unavailable or times out.
+    const allowed = Boolean(canView) || !!ownerMatches || Boolean(sharedDoc);
     if (!allowed) {
       return null;
     }
@@ -213,7 +263,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
     }
 
     const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
-    const manifestCid = localByHash.get(String(hash).toLowerCase())?.ipfs?.cid ?? onChainDoc?.cid ?? null;
+    const manifestCid = localDoc?.ipfs?.cid ?? localDoc?.cid ?? ownedDoc?.cid ?? sharedDoc?.cid ?? null;
 
     return {
       hash,
@@ -225,7 +275,12 @@ async function summarizeAccessibleDocuments(walletAddress) {
       cid: manifestCid,
       access,
     };
-  });
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error while hydrating documents:', err);
+    summaries = [];
+  }
 
   const active = summaries.filter(Boolean);
   const owned = active
@@ -233,6 +288,45 @@ async function summarizeAccessibleDocuments(walletAddress) {
     .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
   const shared = active
     .filter((doc) => doc.access === "shared")
+    .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
+
+  return { owned, shared };
+}
+
+async function summarizeLocalDocuments(walletAddress) {
+  const lowerWallet = String(walletAddress).toLowerCase();
+  const [localDocuments, sharedDocuments] = await Promise.all([
+    listDocuments().catch(() => []),
+    listSharedDocumentsEnriched(walletAddress).catch(() => []),
+  ]);
+
+  const owned = localDocuments
+    .filter((doc) => String(doc?.owner || "").toLowerCase() === lowerWallet)
+    .map((doc) => ({
+      hash: doc.hash,
+      name: doc.name || `Document ${shortHash(doc.hash)}`,
+      owner: doc.owner ?? walletAddress,
+      createdAt: doc.createdAt != null ? Number(doc.createdAt) : null,
+      verified: true,
+      status: doc.status || "Registered",
+      cid: doc?.ipfs?.cid ?? doc?.cid ?? null,
+      access: "owned",
+    }))
+    .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
+
+  const shared = sharedDocuments
+    .map((doc) => ({
+      hash: doc.hash,
+      name: doc.name || `Document ${shortHash(doc.hash)}`,
+      owner: doc.owner ?? null,
+      createdAt: doc.createdAt != null ? Number(doc.createdAt) : null,
+      verified: doc.verified ?? true,
+      status: doc.status || "Registered",
+      cid: doc?.cid ?? doc?.ipfs?.cid ?? null,
+      access: "shared",
+      file: doc?.file ?? null,
+      sharedAt: doc?.sharedAt ?? null,
+    }))
     .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0));
 
   return { owned, shared };
@@ -402,8 +496,23 @@ app.get("/api/documents", async (req, res) => {
   try {
     const address = requireRequesterAddress(req, res, "document owner");
     if (!address) return;
-
-    const documents = await summarizeAccessibleDocuments(address);
+    // Debug: trace document listing for troubleshooting hangs
+    // eslint-disable-next-line no-console
+    console.info(`/api/documents requested by ${address}`);
+    let documents;
+    try {
+      // Keep API responsive, but never return false-empty results on timeout.
+      documents = await Promise.race([
+        summarizeAccessibleDocuments(address),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("/api/documents timeout")), 20000)),
+      ]);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`/api/documents chain summary failed for ${address}, using local fallback:`, err);
+      documents = await summarizeLocalDocuments(address);
+    }
+    // eslint-disable-next-line no-console
+    console.info(`/api/documents completed for ${address}: found ${ (documents?.owned?.length||0) + (documents?.shared?.length||0) } items`);
     return res.json(documents);
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -527,10 +636,25 @@ async function handleUpload(req, res) {
       filename: `${originalname || "document"}.manifest.json`,
     });
 
-    // NOTE: Do not persist manifests to local storage in deployed environments
-    // that don't provide durable file storage. The canonical source of truth
-    // for retrieval is the IPFS manifest CID which we return to the caller and
-    // encourage to store on-chain when registering the hash.
+    // Persist the manifest CID locally so downloads can resolve it even when
+    // the on-chain getter is restricted to the owner or approved viewers.
+    await putDocument({
+      hash,
+      name: originalname || `Document ${shortHash(hash)}`,
+      owner: ownerAddress,
+      createdAt: null,
+      verified: true,
+      status: "Uploaded",
+      cid: manifestResult.cid ?? null,
+      ipfs: {
+        cid: manifestResult.cid ?? null,
+        fileCid: fileResult.cid ?? null,
+        url: manifestResult.url ?? (manifestResult.cid ? `${config.ipfsGatewayBaseUrl}${manifestResult.cid}` : null),
+        provider: manifestResult.provider ?? null,
+      },
+      file: fileMeta,
+      access: "owned",
+    });
 
     return res.json({
       message: "Accept the transaction in MetaMask.",
@@ -653,6 +777,15 @@ app.post("/api/verify-hash", async (req, res) => {
  */
 app.get("/api/documents/:hash/download", async (req, res) => {
   try {
+    const withTimeout = async (promise, ms, label) => {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+        ),
+      ]);
+    };
+
     const { hash } = req.params;
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
@@ -665,31 +798,79 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       });
     }
 
-    const onChainDoc = await chain.getDocument(hash);
-    if (!onChainDoc) return res.status(404).json({ error: "Document not found on-chain" });
+    const storedDoc = await getStoredDocument(hash).catch(() => null);
+    const localOwnerMatches =
+      !!storedDoc?.owner && String(storedDoc.owner).toLowerCase() === String(viewerAddress).toLowerCase();
 
-    const isOwner = String(onChainDoc.owner).toLowerCase() === String(viewerAddress).toLowerCase();
+    const onChainMeta = await withTimeout(
+      chain.getDocumentMeta(hash).catch(() => null),
+      8000,
+      "getDocumentMeta"
+    ).catch(() => null);
+    if (!onChainMeta && !storedDoc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const isOwner = onChainMeta
+      ? String(onChainMeta.owner).toLowerCase() === String(viewerAddress).toLowerCase()
+      : localOwnerMatches;
+    const sharedDocs = await listSharedStoreDocuments(viewerAddress).catch(() => []);
+    const sharedMatch = sharedDocs.some((doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase());
+    const sharedDoc = sharedDocs.find((doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()) ?? null;
 
     // Enforce authorization via on-chain access control, but always allow the owner.
     // NOTE: This only checks permissions; it does not store CID/key on-chain.
-    let allowed = isOwner;
-    if (!allowed) {
+    let allowed = isOwner || sharedMatch;
+    if (!allowed && onChainMeta) {
       try {
-        allowed = await chain.canViewDocument(hash, viewerAddress);
+        allowed = await withTimeout(
+          chain.canViewDocument(hash, viewerAddress),
+          8000,
+          "canViewDocument"
+        );
       } catch {
-        // If contract doesn't support canViewDocument, fall back to owner-only.
-        allowed = isOwner;
+        // If contract doesn't support canViewDocument or reverts, fall back to
+        // owner-only plus locally recorded shares for this viewer.
+        allowed = isOwner || sharedMatch;
       }
+    }
+
+    if (!allowed && sharedMatch) {
+      allowed = true;
     }
 
     if (!allowed) {
       return res.status(403).json({ error: "Not authorized to view this document" });
     }
 
-    const storedDoc = await getStoredDocument(hash).catch(() => null);
-    // Prefer local manifest CID when available, otherwise fall back to on-chain CID
-    const manifestCid = storedDoc?.ipfs?.cid ?? (onChainDoc?.cid ?? null);
-    if (!manifestCid) return res.status(500).json({ error: "Missing manifest CID (not in DB or on-chain)" });
+    const onChainDoc = await withTimeout(
+      chain.getDocument(hash, viewerAddress).catch(() => null),
+      10000,
+      "getDocument"
+    ).catch(() => null);
+    // Prefer local manifest CID when available, then a locally recorded share CID,
+    // and only then fall back to an authorized on-chain CID read.
+    // Older records may store the CID at the top level instead of under `ipfs.cid`.
+    let manifestCid = storedDoc?.ipfs?.cid ?? storedDoc?.cid ?? sharedDoc?.cid ?? (onChainDoc?.cid ?? null);
+    if (!manifestCid) {
+      // Recovery fallback: resolve CID from the DocumentRegistered event log.
+      // This helps when local stores were reset but the registration included CID.
+      const registeredDocs = await withTimeout(
+        chain.listRegisteredDocuments().catch(() => []),
+        12000,
+        "listRegisteredDocuments"
+      ).catch(() => []);
+      const registrationMatch = registeredDocs.find(
+        (doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()
+      );
+      const eventCid = typeof registrationMatch?.cid === "string" ? registrationMatch.cid.trim() : "";
+      manifestCid = eventCid || null;
+    }
+    if (!manifestCid) {
+      return res.status(403).json({
+        error: "Manifest CID unavailable for this viewer. The document was found on-chain, but the CID is not accessible from local storage or an authorized on-chain read.",
+      });
+    }
 
     const manifestBytes = await ipfs.fetchBuffer({ cid: manifestCid });
     const manifestEnvelope = JSON.parse(manifestBytes.toString("utf8"));
@@ -704,21 +885,45 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     const ivBytes = Buffer.from(String(manifest?.encryption?.iv), "base64");
 
     const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes);
-    const downloadedHash = hashFileSha256(plaintext);
-    const existsOnChain = await chain.documentExists(downloadedHash);
-    const verifiedOnChain = await chain.verifyDocumentHash(downloadedHash).catch(() => false);
-    if (!existsOnChain) {
+    // Compute new (keccak256) and legacy (sha256) hashes and accept either
+    const downloadedKeccak = hashFileSha256(plaintext);
+    const downloadedSha256 = hashFileSha256Legacy(plaintext);
+
+    const requestedHash = String(hash).toLowerCase();
+    const matchesRequested =
+      String(downloadedKeccak).toLowerCase() === requestedHash ||
+      String(downloadedSha256).toLowerCase() === requestedHash;
+
+    // Fast path: if we already have onChainMeta (fetched at the top of this route),
+    // the document is confirmed to exist on-chain. We only need to verify the
+    // decrypted bytes match the requested hash — no additional RPC calls needed.
+    // This avoids 4 redundant contract calls + the extremely slow getRegistrationProof
+    // (which scans 10,000 blocks in batches of 5 = ~2,000 sequential RPC calls).
+    let existsOnChain = !!onChainMeta;
+    const verifiedOnChain = existsOnChain && matchesRequested;
+
+    if (existsOnChain && !matchesRequested) {
+      // The document exists on-chain but the decrypted content doesn't match the
+      // requested hash — this indicates corruption in IPFS or a key mismatch.
       return res.status(412).json({
-        error: "Document integrity check failed: downloaded file hash not found on blockchain",
+        error: "Download failed: the decrypted file's hash does not match the registered on-chain record. The stored file may have been corrupted on IPFS.",
       });
     }
 
-    let onchain = null;
-    try {
-      onchain = await chain.getRegistrationProof(downloadedHash);
-    } catch {
-      onchain = null;
+    if (!existsOnChain) {
+      return res.status(412).json({
+        error: "Download failed: document not confirmed on-chain. Please retry in a few seconds.",
+      });
     }
+
+    // Use onChainMeta (already fetched) for response headers — no extra RPC needed.
+    const onchain = onChainMeta
+      ? {
+          owner: onChainMeta.owner ?? null,
+          createdAt: onChainMeta.createdAt != null ? Number(onChainMeta.createdAt) : null,
+          blockNumber: null,
+        }
+      : null;
 
     // Integrity passed: set informational headers and return the original file.
     // We avoid exposing any document hashes in headers or body.
@@ -727,22 +932,149 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     res.setHeader("Content-Type", mimetype);
     res.setHeader("Content-Disposition", `attachment; filename="${String(filename).replace(/"/g, "")}"`);
     res.setHeader("X-Document-Integrity", "passed");
-    res.setHeader("X-Document-Integrity-Message", "Document integrity verified: record found on blockchain");
+    res.setHeader("X-Document-Integrity-Message", "Document integrity verified: decrypted hash matches on-chain record");
     if (onchain && onchain.owner) res.setHeader("X-Document-Owner", String(onchain.owner));
-    if (onchain && onchain.createdAt) res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
-    // Add verified timestamp/message header (human-readable) without exposing hash
-    if (verifiedOnChain) {
-      const verifiedAt = onchain?.createdAt ?? Math.floor(Date.now() / 1000);
-      res.setHeader("X-Document-Verified-At", String(verifiedAt));
-      res.setHeader("X-Document-Verified-Message", `Hash verified around ${new Date(verifiedAt * 1000).toISOString()}`);
+    if (onchain && onchain.createdAt) {
+      res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
+      res.setHeader("X-Document-Verified-At", String(onchain.createdAt));
+      res.setHeader("X-Document-Verified-Message", `Hash verified around ${new Date(onchain.createdAt * 1000).toISOString()}`);
     }
-    if (onchain && onchain.blockNumber != null) res.setHeader("X-Document-Block-Number", String(onchain.blockNumber));
     if (config.contractAddress) res.setHeader("X-Document-Contract", String(config.contractAddress));
 
     return res.send(plaintext);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/documents/:hash/download error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/shared-documents - Return enriched shared documents for the caller
+ * Cross-references the shared collection with the documents collection in MongoDB
+ * to provide full metadata (filename, IPFS CID, file size, etc.)
+ */
+app.get("/api/shared-documents", async (req, res) => {
+  try {
+    const address = requireRequesterAddress(req, res, "shared-doc viewer");
+    if (!address) return;
+    // eslint-disable-next-line no-console
+    console.info(`/api/shared-documents requested by ${address}`);
+    const enrichedDocs = await listSharedDocumentsEnriched(address);
+    // eslint-disable-next-line no-console
+    console.info(`/api/shared-documents completed for ${address}: found ${enrichedDocs.length} shared documents`);
+    return res.json({ shared: enrichedDocs });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/shared-documents GET error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/shared-record", async (req, res) => {
+  try {
+    const viewerAddress = requireRequesterAddress(req, res, "shared-doc viewer");
+    if (!viewerAddress) return;
+
+    const body = req.body ?? {};
+    const hash = typeof body.hash === "string" ? body.hash : "";
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const owner = typeof body.owner === "string" ? body.owner.trim() : "";
+    const createdAt = Number.isFinite(Number(body.createdAt)) ? Number(body.createdAt) : null;
+    const cid = typeof body.cid === "string" ? body.cid.trim() : null;
+
+    if (!hash.startsWith("0x") || hash.length !== 66) {
+      return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
+    }
+
+    const record = await putSharedDocument(viewerAddress, {
+      hash,
+      name: name || `Document ${shortHash(hash)}`,
+      owner: owner || null,
+      createdAt,
+      verified: true,
+      status: "Registered",
+      cid,
+      access: "shared",
+    });
+
+    return res.json({ shared: record });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/shared-record POST error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+app.delete("/api/shared-record", async (req, res) => {
+  try {
+    const viewerAddress = typeof req.body?.viewerAddress === "string" ? req.body.viewerAddress.trim() : "";
+    const hash = typeof req.body?.hash === "string" ? req.body.hash.trim() : "";
+    const ownerAddress = getRequesterAddress(req);
+
+    if (!isEthAddress(ownerAddress)) {
+      return res.status(400).json({ error: "Missing/invalid owner address. Provide wallet-address header (0x...)" });
+    }
+    if (!viewerAddress.startsWith("0x") || viewerAddress.length !== 42) {
+      return res.status(400).json({ error: "Invalid viewer address" });
+    }
+    if (!hash.startsWith("0x") || hash.length !== 66) {
+      return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
+    }
+
+    const onChainMeta = await chain.getDocumentMeta(hash).catch(() => null);
+    if (!onChainMeta) {
+      return res.status(404).json({ error: "Document not found on-chain" });
+    }
+    if (String(onChainMeta.owner).toLowerCase() !== String(ownerAddress).toLowerCase()) {
+      return res.status(403).json({ error: "Only the owner can revoke shared access" });
+    }
+
+    await deleteSharedDocumentForViewer(viewerAddress, hash).catch(() => false);
+    return res.json({ ok: true, hash, viewerAddress });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/shared-record DELETE error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+app.delete("/api/documents/:hash", async (req, res) => {
+  try {
+    const { hash } = req.params;
+    if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
+      return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
+    }
+
+    const viewerAddress = getRequesterAddress(req);
+    if (!isEthAddress(viewerAddress)) {
+      return res.status(400).json({ error: "Missing/invalid wallet address. Provide wallet-address header (0x...)" });
+    }
+
+    const onChainMeta = await chain.getDocumentMeta(hash).catch(() => null);
+    if (!onChainMeta) {
+      return res.status(404).json({ error: "Document not found on-chain" });
+    }
+
+    if (String(onChainMeta.owner).toLowerCase() !== String(viewerAddress).toLowerCase()) {
+      return res.status(403).json({ error: "Only the owner can delete this document" });
+    }
+
+    const deletedDocument = await deleteStoredDocument(hash).catch(() => false);
+    const deletedShared = await deleteSharedDocument(hash).catch(() => false);
+
+    return res.json({
+      ok: true,
+      deleted: deletedDocument || deletedShared,
+      hash,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/documents/:hash DELETE error:", err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
