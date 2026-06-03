@@ -267,7 +267,7 @@ async function summarizeAccessibleDocuments(walletAddress) {
 
     return {
       hash,
-      name: `Document ${shortHash(hash)}`,
+      name: localDoc?.name || sharedDoc?.name || `Document ${shortHash(hash)}`,
       owner,
       createdAt: meta?.createdAt != null ? Number(meta.createdAt) : null,
       verified: true,

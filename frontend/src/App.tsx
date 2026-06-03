@@ -226,6 +226,7 @@ function App() {
     busy: false,
   })
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [downloadedDocInfo, setDownloadedDocInfo] = useState<Record<string, { downloadedHash: string; registeredHash: string; verifiedOnChain: boolean }>>({})
   const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const verifyInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -438,6 +439,19 @@ function App() {
     void connectWallet()
   }
 
+  function resetUploadPage() {
+    setUploadFile(null)
+    setUploadHash('')
+    setUploadStage(0)
+    setUploadMessage('')
+    setUploadProgress(null)
+  }
+
+  function goDashboard() {
+    resetUploadPage()
+    setActivePage('dashboard')
+  }
+
   async function saveProfileDraft() {
     if (!walletAddress || !profile) {
       pushToast('Profile unavailable', 'Connect a wallet before saving profile changes.', 'warning')
@@ -573,20 +587,19 @@ function App() {
       pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')
       await tx.wait()
       setUploadMessage(`Document anchored on-chain. Transaction hash: ${tx.hash}`)
-      // Query backend for canonical verification response so UI shows the same
-      // verification output as backend (includes database info and timestamps).
+      
       try {
         const verified = await verifyHash(hash, walletAddress ?? undefined)
-        pushToast('Registration confirmed', shortHash(hash), 'success')
         if (verified.onChain && verified.onChain.createdAt) {
           setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}. Transaction hash: ${tx.hash}`)
         }
       } catch (e) {
-        // Non-fatal: still refresh documents if backend verify fails temporarily
         // eslint-disable-next-line no-console
         console.warn('Post-register verify failed', e)
       }
-      setActivePage('dashboard')
+      
+      setUploadStage(4)
+      pushToast('Registration confirmed', shortHash(hash), 'success')
       await refreshDashboardDocs()
     } catch (error) {
       setUploadMessage(error instanceof Error ? error.message : String(error))
@@ -604,6 +617,35 @@ function App() {
     }
     try {
       const payload = await fetchDocumentDownload(hash, walletAddress)
+      const downloadedHash = ethers.keccak256(payload.bytes)
+
+      let verifiedOnChain = false
+      let registeredHash = hash
+      try {
+        const ethereum = window.ethereum
+        if (ethereum) {
+          const provider = new ethers.BrowserProvider(ethereum)
+          const address = await ensureContractAddress()
+          const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, provider)
+          verifiedOnChain = await contract.verifyDocument(downloadedHash)
+          if (verifiedOnChain) {
+            registeredHash = downloadedHash
+          }
+        }
+      } catch (chainErr) {
+        // eslint-disable-next-line no-console
+        console.warn('On-chain verification during download failed:', chainErr)
+      }
+
+      setDownloadedDocInfo((prev) => ({
+        ...prev,
+        [hash]: {
+          downloadedHash,
+          registeredHash,
+          verifiedOnChain,
+        },
+      }))
+
       downloadBytes(payload.bytes, payload.filename || fallbackName, payload.mimetype)
       pushToast('Download started', shortHash(hash), 'success')
     } catch (error) {
@@ -818,6 +860,8 @@ function App() {
             stage={uploadStage}
             busy={uploadBusy}
             progress={uploadProgress}
+            onReset={resetUploadPage}
+            onGoDashboard={goDashboard}
           />
         )}
 
@@ -830,6 +874,7 @@ function App() {
             onFilterChange={setSharedFilter}
             onRefresh={() => void loadSharedDocs()}
             walletAddress={walletAddress}
+            downloadedDocInfo={downloadedDocInfo}
           />
         )}
 
@@ -1258,8 +1303,59 @@ function UploadPage(props: {
   stage: number
   busy: boolean
   progress: number | null
+  onReset: () => void
+  onGoDashboard: () => void
 }) {
-  const { file, inputRef, onPickFile, onRegister, onSelectFile, busy, progress } = props
+  const { file, hash, inputRef, onPickFile, onRegister, onSelectFile, stage, busy, progress, onReset, onGoDashboard } = props
+
+  if (stage === 4) {
+    return (
+      <section className="pageStack uploadPage">
+        <div className="sectionHeading">
+          <div>
+            <div className="eyebrow">Upload Complete</div>
+            <h2>Document registered successfully!</h2>
+          </div>
+        </div>
+
+        <div className="panelShell" style={{ padding: '24px', display: 'grid', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--success)', fontWeight: 'bold', fontSize: '1.2rem' }}>
+            <span style={{ fontSize: '1.5rem' }}>✓</span> Document is anchored on the blockchain.
+          </div>
+          
+          <div style={{ display: 'grid', gap: '12px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: '600', color: 'var(--muted)', fontSize: '0.9rem' }}>Filename:</span>
+              <strong style={{ fontSize: '1rem', color: 'var(--text)' }}>{file?.name}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: '600', color: 'var(--muted)', fontSize: '0.9rem' }}>File Size:</span>
+              <span style={{ color: 'var(--text)' }}>{file ? `${Math.max(1, Math.round(file.size / 1024))} KB` : ''}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: '600', color: 'var(--muted)', fontSize: '0.9rem' }}>Document Hash:</span>
+              <span style={{ fontFamily: 'monospace', fontSize: '0.9rem', color: 'var(--text)', wordBreak: 'break-all' }}>{hash}</span>
+            </div>
+            {props.message && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '4px' }}>
+                <span style={{ fontWeight: '600', color: 'var(--muted)', fontSize: '0.9rem', display: 'block', marginBottom: '6px' }}>On-chain Log:</span>
+                <span className="verifyNote" style={{ fontSize: '0.88rem', wordBreak: 'break-all' }}>{props.message}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="uploadActions" style={{ marginTop: '20px', display: 'flex', gap: '12px' }}>
+          <button type="button" className="primaryButton" onClick={onGoDashboard}>
+            Go to Dashboard
+          </button>
+          <button type="button" className="secondaryButton" onClick={onReset}>
+            Register Another Document
+          </button>
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className="pageStack uploadPage">
@@ -1328,8 +1424,9 @@ function SharedPage(props: {
   onFilterChange: (value: string) => void
   onRefresh: () => void
   walletAddress: string | null
+  downloadedDocInfo: Record<string, { downloadedHash: string; registeredHash: string; verifiedOnChain: boolean }>
 }) {
-  const { docs, filter, loading, onDownload, onFilterChange, onRefresh, walletAddress } = props
+  const { docs, filter, loading, onDownload, onFilterChange, onRefresh, walletAddress, downloadedDocInfo } = props
   const [expandedHashes, setExpandedHashes] = useState<Record<string, boolean>>({})
 
   const toggleExpand = (hash: string) => {
@@ -1461,18 +1558,35 @@ function SharedPage(props: {
 
               {expandedHashes[doc.hash] ? (
                 <div className="sharedBottomHashes">
-                  <div className="sharedBottomHashRow">
-                    <span className="sharedBottomHashLabel">shared Document hash:</span>
-                    <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
-                      {shortHash(doc.hash)}
-                    </button>
-                  </div>
-                  <div className="sharedBottomHashRow">
-                    <span className="sharedBottomHashLabel">Registrator hash:</span>
-                    <button type="button" className="hashPill" onClick={() => void copyText(doc.owner || '')}>
-                      {shortAddr(doc.owner)}
-                    </button>
-                  </div>
+                  {downloadedDocInfo[doc.hash] ? (
+                    <>
+                      <div className="sharedBottomHashRow">
+                        <span className="sharedBottomHashLabel">shared Document hash:</span>
+                        <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].downloadedHash)}>
+                          {shortHash(downloadedDocInfo[doc.hash].downloadedHash)}
+                        </button>
+                      </div>
+                      <div className="sharedBottomHashRow">
+                        <span className="sharedBottomHashLabel">Registrator hash:</span>
+                        <button type="button" className="hashPill" onClick={() => void copyText(downloadedDocInfo[doc.hash].registeredHash)}>
+                          {shortHash(downloadedDocInfo[doc.hash].registeredHash)}
+                        </button>
+                      </div>
+                      {downloadedDocInfo[doc.hash].verifiedOnChain ? (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
+                          ✓ Hashes match and are verified on blockchain!
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: '8px', textAlign: 'center', fontWeight: 'bold' }}>
+                          ⚠ Warning: Downloaded hash does not match blockchain records!
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: '0.82rem', color: 'var(--muted)', textAlign: 'center', padding: '10px 0' }}>
+                      Please click "Download" to fetch the document, calculate its hash locally, and verify it on-chain.
+                    </div>
+                  )}
                 </div>
               ) : null}
             </article>
