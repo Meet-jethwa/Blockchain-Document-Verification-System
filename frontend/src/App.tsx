@@ -2,7 +2,7 @@ import './App.css'
 import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
-import { fetchDocuments, fetchProfile, fetchSharedDocuments, postFileWithProgress, recordSharedDocument, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
+import { fetchDocuments, fetchProfile, fetchSharedDocuments, postFileWithProgress, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -154,7 +154,7 @@ async function extractHash(file: File) {
 }
 
 async function fetchBackendHealth() {
-  const response = await fetch('/api/health')
+  const response = await fetch(resolveUrl('/api/health'))
   if (!response.ok) {
     throw new Error(`Health check failed (${response.status})`)
   }
@@ -166,7 +166,7 @@ async function fetchDocumentDownload(hash: string, walletAddress: string) {
   const timeout = window.setTimeout(() => controller.abort(), 90000)
   let response: Response
   try {
-    response = await fetch(`/api/documents/${hash}/download`, {
+    response = await fetch(resolveUrl(`/api/documents/${hash}/download`), {
       method: 'GET',
       headers: {
         'wallet-address': walletAddress,

@@ -114,7 +114,7 @@ function extractErrorMessage(data: unknown): string | null {
   return typeof err === 'string' ? err : null
 }
 
-function resolveUrl(url: string) {
+export function resolveUrl(url: string) {
   const env = (import.meta as any).env
   const base = (env?.VITE_API_URL || env?.VITE_API_BASE_URL) as string | undefined
   if (!base) return url
