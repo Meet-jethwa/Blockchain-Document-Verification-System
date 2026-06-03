@@ -996,9 +996,6 @@ function Header(props: {
             <span className={verifyPreview.verified ? 'statusPill success' : 'statusPill warning'}>
               {verifyPreview.status}
             </span>
-            <button className="hashPill" type="button" onClick={() => copyText(verifyPreview.hash)}>
-              {shortHash(verifyPreview.hash)}
-            </button>
             <span className="verifyNote">{verifyPreview.note}</span>
           </div>
         ) : (
@@ -1403,17 +1400,11 @@ function SharedPage(props: {
                   <div className="sharedMeta">Owner {shortAddr(doc.owner)}</div>
                 </div>
                 <span className={doc.verified ? 'statusPill success' : 'statusPill warning'}>
-                  {doc.verified ? 'Verified ✓' : 'Pending'}
+                  {doc.verified ? 'hash Verified' : 'Pending'}
                 </span>
               </div>
 
               <div className="sharedCardDetails">
-                <div className="sharedDetailRow">
-                  <span className="sharedDetailLabel">Hash</span>
-                  <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
-                    {shortHash(doc.hash)}
-                  </button>
-                </div>
                 {doc.file?.name ? (
                   <div className="sharedDetailRow">
                     <span className="sharedDetailLabel">File</span>
@@ -1432,20 +1423,12 @@ function SharedPage(props: {
                     <span className="sharedDetailValue">{doc.file.mimetype}</span>
                   </div>
                 ) : null}
-                <div className="sharedDetailRow">
-                  <span className="sharedDetailLabel">Recorded</span>
-                  <span className="sharedDetailValue">{formatUnixSeconds(doc.createdAt ? Math.floor(doc.createdAt / 1000) : null)}</span>
-                </div>
                 {doc.sharedAt ? (
                   <div className="sharedDetailRow">
                     <span className="sharedDetailLabel">Shared on</span>
                     <span className="sharedDetailValue">{new Date(doc.sharedAt).toLocaleDateString()}</span>
                   </div>
                 ) : null}
-                <div className="sharedDetailRow">
-                  <span className="sharedDetailLabel">Status</span>
-                  <span className={`statusPill ${doc.status === 'Revoked' ? 'danger' : 'success'}`}>{doc.status}</span>
-                </div>
               </div>
 
               <button
@@ -1456,6 +1439,29 @@ function SharedPage(props: {
               >
                 Download
               </button>
+
+              <div className="sharedBottomHashes">
+                <div className="sharedBottomHashRow">
+                  <span className="sharedBottomHashLabel">shared Document hash:</span>
+                  <button type="button" className="hashPill" onClick={() => void copyText(doc.hash)}>
+                    {shortHash(doc.hash)}
+                  </button>
+                </div>
+                <div className="sharedBottomHashRow">
+                  <span className="sharedBottomHashLabel">Registrator hash:</span>
+                  <button type="button" className="hashPill" onClick={() => void copyText(doc.owner || '')}>
+                    {shortAddr(doc.owner)}
+                  </button>
+                </div>
+                {doc.cid ? (
+                  <div className="sharedBottomHashRow">
+                    <span className="sharedBottomHashLabel">IPFS CID:</span>
+                    <button type="button" className="hashPill" onClick={() => void copyText(doc.cid || '')}>
+                      {shortHash(doc.cid)}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </article>
           ))}
         </div>

@@ -1790,6 +1790,29 @@ button:disabled {
   box-shadow: 0 0 10px var(--accent-glow);
 }
 
+.sharedBottomHashes {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  display: grid;
+  gap: 8px;
+}
+
+.sharedBottomHashRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.sharedBottomHashLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 .sharedControls {
   display: flex;
   justify-content: space-between;
