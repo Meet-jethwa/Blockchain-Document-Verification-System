@@ -226,9 +226,22 @@ function App() {
     busy: false,
   })
   const [toasts, setToasts] = useState<Toast[]>([])
-  const [downloadedDocInfo, setDownloadedDocInfo] = useState<Record<string, { downloadedHash: string; registeredHash: string; verifiedOnChain: boolean }>>({})
+  const [downloadedDocInfo, setDownloadedDocInfo] = useState<Record<string, { downloadedHash: string; registeredHash: string; verifiedOnChain: boolean }>>(() => {
+    try {
+      const saved = window.localStorage.getItem('bdvs-downloaded-doc-info')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  })
   const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const verifyInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('bdvs-downloaded-doc-info', JSON.stringify(downloadedDocInfo))
+    } catch {}
+  }, [downloadedDocInfo])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -586,6 +599,7 @@ function App() {
       setUploadMessage(`Transaction submitted: ${tx.hash}`)
       pushToast('Transaction pending', 'Confirm the MetaMask transaction to finish registration.', 'info')
       await tx.wait()
+      setUploadStage(4)
       setUploadMessage(`Document anchored on-chain. Transaction hash: ${tx.hash}`)
       
       try {
@@ -598,7 +612,6 @@ function App() {
         console.warn('Post-register verify failed', e)
       }
       
-      setUploadStage(4)
       pushToast('Registration confirmed', shortHash(hash), 'success')
       await refreshDashboardDocs()
     } catch (error) {
@@ -1611,7 +1624,7 @@ function SharedPage(props: {
 
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '8px', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>Verification</h3>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>verified </h3>
               <span style={{ fontSize: '0.85rem', background: 'var(--panel)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: '999px', color: 'var(--muted)' }}>
                 {verifiedDocs.length}
               </span>
