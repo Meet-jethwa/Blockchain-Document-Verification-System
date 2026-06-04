@@ -900,6 +900,13 @@ app.get("/api/documents/:hash/download", async (req, res) => {
     // This avoids 4 redundant contract calls + the extremely slow getRegistrationProof
     // (which scans 10,000 blocks in batches of 5 = ~2,000 sequential RPC calls).
     let existsOnChain = !!onChainMeta;
+    if (!existsOnChain) {
+      if (storedDoc && (storedDoc.status === "Registered" || storedDoc.status === "Uploaded" || storedDoc.verified)) {
+        existsOnChain = true;
+      } else if (sharedDoc && (sharedDoc.status === "Registered" || sharedDoc.status === "Uploaded" || sharedDoc.verified)) {
+        existsOnChain = true;
+      }
+    }
     const verifiedOnChain = existsOnChain && matchesRequested;
 
     if (existsOnChain && !matchesRequested) {

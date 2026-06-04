@@ -1237,7 +1237,12 @@ function DashboardPage(props: {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="tableEmpty">Loading ledger records...</td>
+                  <td colSpan={5} className="tableEmpty">
+                    <div className="loadingSpinnerWrapper">
+                      <div className="loadingSpinner"></div>
+                      <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>Loading ledger records...</span>
+                    </div>
+                  </td>
                 </tr>
               ) : docs.length === 0 ? (
                 <tr>
@@ -1339,11 +1344,11 @@ function UploadPage(props: {
         </div>
 
         <div className="uploadActions" style={{ marginTop: '20px', display: 'flex', gap: '12px' }}>
-          <button type="button" className="primaryButton" onClick={onGoDashboard}>
-            Go to Dashboard
+          <button type="button" className="primaryButton" onClick={onReset}>
+            Done
           </button>
-          <button type="button" className="secondaryButton" onClick={onReset}>
-            Register Another Document
+          <button type="button" className="secondaryButton" onClick={onGoDashboard}>
+            Go to Dashboard
           </button>
         </div>
       </section>
@@ -1572,7 +1577,12 @@ function SharedPage(props: {
       </div>
 
       {loading ? (
-        <div className="emptyState">Loading shared documents from MongoDB…</div>
+        <div className="emptyState">
+          <div className="loadingSpinnerWrapper">
+            <div className="loadingSpinner"></div>
+            <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>Loading shared documents from MongoDB…</span>
+          </div>
+        </div>
       ) : filteredDocs.length === 0 ? (
         <div className="emptyState">
           {docs.length === 0
