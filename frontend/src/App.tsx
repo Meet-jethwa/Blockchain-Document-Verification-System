@@ -3,6 +3,7 @@ import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
 import { fetchDocuments, fetchProfile, fetchSharedDocuments, postFileWithProgress, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
+import { signAuthHeaders } from './clientCrypto'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -161,7 +162,7 @@ async function fetchBackendHealth() {
   return response.json() as Promise<{ contractAddress?: string; chainId?: number; ipfsGatewayBaseUrl?: string }>
 }
 
-async function fetchDocumentDownload(hash: string, walletAddress: string) {
+async function fetchDocumentDownload(hash: string, walletAddress: string, headers?: Record<string, string>) {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), 90000)
   let response: Response
@@ -170,6 +171,7 @@ async function fetchDocumentDownload(hash: string, walletAddress: string) {
       method: 'GET',
       headers: {
         'wallet-address': walletAddress,
+        ...(headers || {}),
       },
       signal: controller.signal,
     })
@@ -562,15 +564,21 @@ function App() {
         await syncWalletContext()
       }
       const activeWallet = walletAddress ?? (((await ethereum.request({ method: 'eth_accounts' })) as string[])[0] ?? null)
-      if (!activeWallet) {
-        throw new Error('No connected wallet available')
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+      let authHeaders: Record<string, string> = { 'wallet-address': activeWallet }
+      try {
+        const signed = await signAuthHeaders(signer, activeWallet)
+        authHeaders = { ...authHeaders, ...signed }
+      } catch {
+        // Fallback to basic header if signature cancelled
       }
 
       setUploadProgress(0)
       const uploadResponse = await postFileWithProgress<RegisterResponse>(
         '/api/upload',
         uploadFile,
-        { headers: { 'wallet-address': activeWallet } },
+        { headers: authHeaders },
         (percent) => setUploadProgress(percent),
       )
       setUploadProgress(null)
@@ -590,8 +598,6 @@ function App() {
       }
 
       const address = await ensureContractAddress()
-      const provider = new ethers.BrowserProvider(ethereum)
-      const signer = await provider.getSigner()
       const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, signer)
       const cid = uploadResponse.ipfs?.cid ?? ''
       const tx = await contract.registerDocument(hash, cid)

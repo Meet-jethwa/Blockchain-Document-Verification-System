@@ -19,6 +19,7 @@ import multer from "multer";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ethers } from "ethers";
 
 import { config } from "./config.js";
 import { makeChainClient, hashFileSha256, hashFileSha256Legacy } from "./chain.js";
@@ -614,7 +615,7 @@ async function handleUpload(req, res) {
     }
 
     // Always encrypt before uploading to IPFS.
-    const { encrypted, key, iv } = encryptFile(buffer);
+    const { encrypted, key, iv, authTag, alg } = encryptFile(buffer);
 
     const fileResult = await ipfs.uploadBuffer({
       buffer: encrypted,
@@ -625,9 +626,10 @@ async function handleUpload(req, res) {
       fileCid: fileResult.cid,
       fileMeta,
       encryption: {
-        alg: "aes-256-cbc",
+        alg: alg || "aes-256-gcm",
         key: key.toString("base64"),
         iv: iv.toString("base64"),
+        authTag: authTag ? authTag.toString("base64") : null,
       },
     });
     const manifestEnvelope = encodePayloadJson(manifest, masterKey);
@@ -883,8 +885,10 @@ app.get("/api/documents/:hash/download", async (req, res) => {
 
     const keyBytes = Buffer.from(String(manifest?.encryption?.key), "base64");
     const ivBytes = Buffer.from(String(manifest?.encryption?.iv), "base64");
+    const authTagBytes = manifest?.encryption?.authTag ? Buffer.from(String(manifest.encryption.authTag), "base64") : null;
+    const alg = manifest?.encryption?.alg || (authTagBytes ? "aes-256-gcm" : "aes-256-cbc");
 
-    const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes);
+    const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes, authTagBytes, alg);
     // Compute new (keccak256) and legacy (sha256) hashes and accept either
     const downloadedKeccak = hashFileSha256(plaintext);
     const downloadedSha256 = hashFileSha256Legacy(plaintext);

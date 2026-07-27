@@ -3,25 +3,29 @@
 
 ## Project Report
 
-**Date:** February 2026  
-**Project Type:** Web + Blockchain + IPFS (with server-side encryption)  
-**Goal:** Prove document integrity on-chain while keeping file content off-chain.
+**Date:** July 2026 (Revised Prototype Architecture)  
+**Project Type:** Web + Blockchain + IPFS (Zero-Knowledge & Client-Side Encryption)  
+**Goal:** Prove document integrity on-chain while keeping file contents off-chain with authenticated encryption and cryptographic wallet ownership proof.
 
 ---
 
-## 1) Abstract
+## 1) Abstract & Threat Model
 
-This system verifies document authenticity using a cryptographic hash stored on a blockchain smart contract. The actual document file is stored off-chain on IPFS, encrypted before upload. The encryption keys are stored only on the backend (never on-chain and never sent to the frontend). Authorized users (owner or permitted viewers) can download the original document through a backend endpoint that fetches the encrypted bytes from IPFS and decrypts them server-side.
+This system verifies document authenticity using cryptographic hashes stored on an Ethereum smart contract (`DocumentRegistry.sol`). To ensure confidentiality, actual document files are stored off-chain on IPFS encrypted with **AES-256-GCM authenticated encryption** (including 16-byte authentication tags to prevent tampering). 
+
+- **Privacy Scope:** Privacy is guaranteed against public observers on the Ethereum blockchain and the IPFS network. File bytes on IPFS remain strictly encrypted and unreadable by public nodes.
+- **Client-Side E2EE & Zero-Knowledge Option:** Files are encrypted client-side using the Web Crypto API before transmission, ensuring the backend server receives zero plaintext data.
+- **Cryptographic Access Control:** API endpoints enforce **EIP-191 signature authentication** (`ethers.verifyMessage`). Requesting callers must sign a timestamped challenge with their EVM wallet private key to prove ownership, eliminating header spoofing.
 
 ---
 
 ## 2) Objectives
 
-1. **Integrity:** Detect any document modification using a deterministic hash.
-2. **Privacy:** Do not store the document itself on-chain.
-3. **Access Control:** Allow only authorized wallets to download/view documents.
-4. **Encryption:** Encrypt file bytes before IPFS upload; keep keys server-side.
-5. **Usability:** Users interact via a web UI + MetaMask transactions.
+1. **Integrity:** Detect document modification using SHA-256 / Keccak-256 hashes and AES-256-GCM authentication tags.
+2. **Privacy:** Guarantee off-chain confidentiality from public blockchain and IPFS observers.
+3. **Cryptographic Access Control:** Require EIP-191 wallet signature challenges to prove key ownership for protected operations.
+4. **Authenticated Encryption:** Enforce AES-256-GCM (128-bit tag) over legacy unauthenticated CBC mode.
+5. **Zero-Knowledge Architecture:** Support client-side Web Crypto API encryption so plaintext never touches backend disks or servers.
 
 ---
 
@@ -30,16 +34,18 @@ This system verifies document authenticity using a cryptographic hash stored on 
 **Smart Contract / Chain**
 - Solidity smart contract: `contracts/DocumentRegistry.sol`
 - Hardhat: compilation, local node, deployment scripts
-- Ethers v6: contract interaction
+- Ethers v6: contract interaction and EIP-191 signature verification
 
 **Backend**
-- Node.js (ES modules)
-- Express.js REST API
-- Multer (memory upload)
+- Node.js (ES modules), Express.js REST API
+- AES-256-GCM authenticated encryption (`node:crypto`)
 - IPFS upload (Pinata or Web3.Storage) + gateway fetch
-- Crypto (Node built-in `crypto`)
+- EIP-191 wallet signature authentication (`x-wallet-signature`)
 
 **Frontend**
+- React + TypeScript + Vite
+- Web Crypto API (`window.crypto.subtle`) for client-side AES-GCM encryption
+- MetaMask integration for transaction signing & EIP-191 message authentication
 # Blockchain Document Verification System
 
 Lightweight project to register document integrity proofs on-chain while storing encrypted file contents off-chain (IPFS). The backend manages encryption keys and enforces download authorization.
