@@ -9,12 +9,12 @@ The smart contract registry acts as the single source of truth for the entire de
 
 * **Contract File:** [`contracts/DocumentRegistry.sol`](./contracts/DocumentRegistry.sol)
 * **Solidity Compiler Version:** `^0.8.20`
-* **License:** `SPDX-License-Identifier: MIT`
+* **License:** `SPDX (Software Package Data Exchange)-License-Identifier: MIT (Massachusetts Institute of Technology)`
 
 ### 1.1 Core Data Structures (`struct Document`)
 Defined at [DocumentRegistry.sol:L20-L31](./contracts/DocumentRegistry.sol#L20-L31):
 * `address owner`: Ethereum wallet address of the document registrar/owner.
-* `string cid`: Content Identifier pointer (enforced to remain off-chain `""` to decouple proof from storage).
+* `string cid`: CID (Content Identifier) pointer (enforced to remain off-chain `""` to decouple proof from storage).
 * `uint256 createdAt`: Unix timestamp (`block.timestamp`) recording block mining time.
 * `bytes32 rootHash`: 256-bit cryptographic digest of the root version (version 1) anchoring the lineage chain.
 * `uint256 version`: 1-based sequential version index under the root hash.
@@ -39,30 +39,30 @@ Private/internal functions encapsulating business logic:
 * `_canView(bytes32 hash, address user)` ([L98](./contracts/DocumentRegistry.sol#L98)): Resolves multi-tiered viewer permissions (`owner || documentViewers[hash][user] || rootViewers[root][user]`).
 
 ### 1.4 Complete Smart Contract Functions Specification
-Comprehensive mapping of all 17 public/external contract functions in [DocumentRegistry.sol](./contracts/DocumentRegistry.sol):
+Comprehensive mapping of all 17 public/external contract functions in [DocumentRegistry.sol](./contracts/DocumentRegistry.sol) corresponding to capabilities in the research paper:
 
-| Capability Domain | Function Signature | Direct Code Location | Type & Mutability | Description |
+| Paper Capability Name | Function Signature | Direct Code Location | Type & Mutability | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| **Registration** | `registerDocument(bytes32 hash, string calldata cid)` | [DocumentRegistry.sol:L116](./contracts/DocumentRegistry.sol#L116) | `external` (State-changing) | Computes and registers the initial root document record (version 1) and assigns ownership to `msg.sender`. |
-| **Versioning** | `addDocumentVersion(bytes32 rootHash, bytes32 hash, string calldata cid)` | [DocumentRegistry.sol:L150](./contracts/DocumentRegistry.sol#L150) | `external` (State-changing) | Appends a subsequent version digest to an existing active root lineage. Only callable by root owner. |
-| **Access Control** | `grantViewer(bytes32 hash, address viewer)` | [DocumentRegistry.sol:L179](./contracts/DocumentRegistry.sol#L179) | `external` (State-changing) | Authorizes a specific wallet address to view details for a specific document version. |
-| **Access Control** | `revokeViewer(bytes32 hash, address viewer)` | [DocumentRegistry.sol:L195](./contracts/DocumentRegistry.sol#L195) | `external` (State-changing) | Resets viewing permission for a specific version from a viewer wallet. |
-| **Access Control** | `canViewDocument(bytes32 hash, address user)` | [DocumentRegistry.sol:L209](./contracts/DocumentRegistry.sol#L209) | `external view` (Free call) | Resolves whether a wallet address has read authority over a non-revoked document. |
-| **Access Control** | `grantRootViewer(bytes32 rootHash, address viewer)` | [DocumentRegistry.sol:L220](./contracts/DocumentRegistry.sol#L220) | `external` (State-changing) | Grants viewing permissions for all child versions under a root tree to a recipient wallet. |
-| **Access Control** | `revokeRootViewer(bytes32 rootHash, address viewer)` | [DocumentRegistry.sol:L236](./contracts/DocumentRegistry.sol#L236) | `external` (State-changing) | Revokes tree-wide viewing authorization under an entire root family. |
-| **Verification** | `verifyDocument(bytes32 hash)` | [DocumentRegistry.sol:L257](./contracts/DocumentRegistry.sol#L257) | `external view` (Free call) | Public zero-cost verification: checks if a hash exists and is currently non-revoked. |
-| **Verification** | `verifyMyDocument(bytes32 hash)` | [DocumentRegistry.sol:L273](./contracts/DocumentRegistry.sol#L273) | `external view` (Free call) | Caller-specific verification: checks existence, active status, and confirms `msg.sender == owner`. |
-| **Revocation** | `revokeDocument(bytes32 hash)` | [DocumentRegistry.sol:L282](./contracts/DocumentRegistry.sol#L282) | `external` (State-changing) | Invalidation of a single version by owner, rendering it unviewable via `getDocument`. |
-| **Revocation** | `revokeDocumentRoot(bytes32 rootHash)` | [DocumentRegistry.sol:L294](./contracts/DocumentRegistry.sol#L294) | `external` (State-changing) | Cascade revocation: owner invalidates root and automatically all descendant version digests. |
-| **Revocation** | `isDocumentRevoked(bytes32 hash)` | [DocumentRegistry.sol:L306](./contracts/DocumentRegistry.sol#L306) | `external view` (Free call) | Inquires whether a specific hash is revoked directly or through its root. |
-| **Inspection** | `getDocumentVersion(bytes32 hash)` | [DocumentRegistry.sol:L313](./contracts/DocumentRegistry.sol#L313) | `external view` (Free call) | Returns `(bytes32 rootHash, uint256 version)` sequence index for a document digest. |
-| **Inspection** | `getDocumentVersions(bytes32 rootHash)` | [DocumentRegistry.sol:L322](./contracts/DocumentRegistry.sol#L322) | `external view` (Free call) | Returns an array of all version hashes linked to an existing root document. |
-| **Inspection** | `getDocumentMeta(bytes32 hash)` | [DocumentRegistry.sol:L332](./contracts/DocumentRegistry.sol#L332) | `external view` (Free call) | Public non-sensitive metadata getter returning `(address owner, uint256 createdAt)` without authorization gates. |
-| **Retrieval** | `getDocument(bytes32 hash)` | [DocumentRegistry.sol:L352](./contracts/DocumentRegistry.sol#L352) | `external view` (Free call) | Protected getter returning `(address owner, string memory cid, uint256 createdAt)`. Enforces access control and revocation gates. |
-| **Retrieval** | `getMyDocuments()` | [DocumentRegistry.sol:L379](./contracts/DocumentRegistry.sol#L379) | `external view` (Free call) | Returns array of all document hashes registered by the calling wallet (`msg.sender`). |
+| **Register Document** | `registerDocument(bytes32 hash, string calldata cid)` | [DocumentRegistry.sol:L116](./contracts/DocumentRegistry.sol#L116) | `external` (State-changing) | Computes and registers the initial root document record (version 1) and assigns ownership to `msg.sender`. |
+| **Add Document Version** | `addDocumentVersion(bytes32 rootHash, bytes32 hash, string calldata cid)` | [DocumentRegistry.sol:L150](./contracts/DocumentRegistry.sol#L150) | `external` (State-changing) | Appends a subsequent version digest to an existing active root lineage. Only callable by root owner. |
+| **Grant Viewer Access** | `grantViewer(bytes32 hash, address viewer)` | [DocumentRegistry.sol:L179](./contracts/DocumentRegistry.sol#L179) | `external` (State-changing) | Authorizes a specific wallet address to view details for a specific document version. |
+| **Revoke Viewer Access** | `revokeViewer(bytes32 hash, address viewer)` | [DocumentRegistry.sol:L195](./contracts/DocumentRegistry.sol#L195) | `external` (State-changing) | Resets viewing permission for a specific version from a viewer wallet. |
+| **Check View Permission** | `canViewDocument(bytes32 hash, address user)` | [DocumentRegistry.sol:L209](./contracts/DocumentRegistry.sol#L209) | `external view` (Free call) | Resolves whether a wallet address has read authority over a non-revoked document. |
+| **Grant Root Viewer Access** | `grantRootViewer(bytes32 rootHash, address viewer)` | [DocumentRegistry.sol:L220](./contracts/DocumentRegistry.sol#L220) | `external` (State-changing) | Grants viewing permissions for all child versions under a root tree to a recipient wallet. |
+| **Revoke Root Viewer Access** | `revokeRootViewer(bytes32 rootHash, address viewer)` | [DocumentRegistry.sol:L236](./contracts/DocumentRegistry.sol#L236) | `external` (State-changing) | Revokes tree-wide viewing authorization under an entire root family. |
+| **Check Document Exists / Verify Document** | `verifyDocument(bytes32 hash)` | [DocumentRegistry.sol:L257](./contracts/DocumentRegistry.sol#L257) | `external view` (Free call) | Public zero-cost verification: checks if a hash exists and is currently non-revoked. |
+| **Verify Caller Registration** | `verifyMyDocument(bytes32 hash)` | [DocumentRegistry.sol:L273](./contracts/DocumentRegistry.sol#L273) | `external view` (Free call) | Caller-specific verification: checks existence, active status, and confirms `msg.sender == owner`. Prevents replay claim attacks. |
+| **Revoke Document** | `revokeDocument(bytes32 hash)` | [DocumentRegistry.sol:L282](./contracts/DocumentRegistry.sol#L282) | `external` (State-changing) | Invalidation of a single version by owner, rendering it unviewable via `getDocument`. |
+| **Revoke Document Root** | `revokeDocumentRoot(bytes32 rootHash)` | [DocumentRegistry.sol:L294](./contracts/DocumentRegistry.sol#L294) | `external` (State-changing) | Cascade revocation: owner invalidates root and automatically all descendant version digests. |
+| **Check Document Revoked** | `isDocumentRevoked(bytes32 hash)` | [DocumentRegistry.sol:L306](./contracts/DocumentRegistry.sol#L306) | `external view` (Free call) | Inquires whether a specific hash is revoked directly or through its root (reported in paper gas benchmark). |
+| **Get Document Version** | `getDocumentVersion(bytes32 hash)` | [DocumentRegistry.sol:L313](./contracts/DocumentRegistry.sol#L313) | `external view` (Free call) | Returns `(bytes32 rootHash, uint256 version)` sequence index for a document digest. |
+| **Get Document Versions** | `getDocumentVersions(bytes32 rootHash)` | [DocumentRegistry.sol:L322](./contracts/DocumentRegistry.sol#L322) | `external view` (Free call) | Returns an array of all version hashes linked to an existing root document (reported in paper latency benchmark). |
+| **Get Document Metadata** | `getDocumentMeta(bytes32 hash)` | [DocumentRegistry.sol:L332](./contracts/DocumentRegistry.sol#L332) | `external view` (Free call) | Public non-sensitive metadata getter returning `(address owner, uint256 createdAt)` without authorization gates (reported in paper latency benchmark). |
+| **Get Document Details** | `getDocument(bytes32 hash)` | [DocumentRegistry.sol:L352](./contracts/DocumentRegistry.sol#L352) | `external view` (Free call) | Protected getter returning `(address owner, string memory cid, uint256 createdAt)`. Enforces access control and revocation gates. |
+| **Get My Documents** | `getMyDocuments()` | [DocumentRegistry.sol:L379](./contracts/DocumentRegistry.sol#L379) | `external view` (Free call) | Returns array of all document hashes registered by the calling wallet (`msg.sender`) powering the user dashboard. |
 
 ### 1.5 Contract Events & On-Chain Audit Trail
-Events logged to EVM receipt logs for asynchronous indexing and frontend subscriptions:
+Events logged to EVM (Ethereum Virtual Machine) receipt logs for asynchronous indexing and frontend subscriptions:
 * `DocumentRegistered(bytes32 indexed hash, address indexed owner, string cid)` ([L59](./contracts/DocumentRegistry.sol#L59))
 * `DocumentVersionAdded(bytes32 indexed rootHash, bytes32 indexed hash, address indexed owner, uint256 version, string cid)` ([L62](./contracts/DocumentRegistry.sol#L62))
 * `DocumentRevoked(bytes32 indexed hash, address indexed owner)` ([L63](./contracts/DocumentRegistry.sol#L63))
@@ -75,43 +75,49 @@ Events logged to EVM receipt logs for asynchronous indexing and frontend subscri
 ### 1.6 Smart Contract Tooling, Deployment & Benchmark Scripts
 * **Hardhat Configuration:** [`hardhat.config.js`](./hardhat.config.js) — Network configs (Hardhat node, Sepolia testnet, Polygon Amoy), compiler options (`0.8.20`), and ethers plugins.
 * **Contract Deployment Script:** [`scripts/deploy.js`](./scripts/deploy.js) — Automated deployment script using `ethers.deployContract("DocumentRegistry")` and tracking deployment transaction hashes.
-* **Contract Verification & Demo CLI:** [`scripts/demo.js`](./scripts/demo.js) — End-to-end local node demo testing registration, existence verification, and access inspection.
-* **EVM Gas Benchmark Suite:** [`test/benchmark_gas.js`](./test/benchmark_gas.js) — Comprehensive gas consumption measurements across registration, versioning, access granting, and revocation with fiat USD projections across Gwei tiers.
+* **Contract Verification & Demo CLI (Command-Line Interface):** [`scripts/demo.js`](./scripts/demo.js) — End-to-end local node demo testing registration, existence verification, and access inspection.
+* **EVM (Ethereum Virtual Machine) Gas Benchmark Suite:** [`test/benchmark_gas.js`](./test/benchmark_gas.js) — Comprehensive gas consumption measurements across registration, versioning, access granting, and revocation with fiat USD (United States Dollar) projections across Gwei tiers for ETH (Ether).
 
 ---
 
-## 2. Relay Backend (API Services)
-The Node.js backend operates as a middle tier that relays data to IPFS, validates request claims, and enforces contract permissions.
+## 2. Relay Backend (API [Application Programming Interface] Services)
+The Node.js backend operates as a middle tier that relays data to IPFS (InterPlanetary File System), validates request claims, and enforces contract permissions.
 
 * **Backend Entry Point:** [`backend/server.js`](./backend/server.js)
-* **IPFS Connector:** [`backend/ipfs.js`](./backend/ipfs.js)
+* **IPFS (InterPlanetary File System) Connector:** [`backend/ipfs.js`](./backend/ipfs.js)
 * **Crypto Helper:** [`backend/fileCrypto.js`](./backend/fileCrypto.js)
-* **EVM Chain Connector:** [`backend/chain.js`](./backend/chain.js)
+* **EVM (Ethereum Virtual Machine) Chain Connector:** [`backend/chain.js`](./backend/chain.js)
 
-| Paper Capability Name | API Route & Method | Handler Code Location | Description |
+| Paper Capability Name | API (Application Programming Interface) Route & Method | Handler Code Location | Description |
 | :--- | :--- | :--- | :--- |
-| **Check Liveness** | `GET /api/health` | [server.js:L411](./backend/server.js#L411) | Checks server and RPC connectivity health. |
-| **Upload Encrypted Document** | `POST /api/upload` | [server.js:L551](./backend/server.js#L551) | Encrypts file bytes via `encryptFile`, uploads cipher+metadata to IPFS. |
+| **Check Liveness** | `GET /api/health` | [server.js:L411](./backend/server.js#L411) | Checks server and RPC (Remote Procedure Call) connectivity health. |
+| **Upload Encrypted Document** | `POST /api/upload` | [server.js:L551](./backend/server.js#L551) | Encrypts file bytes via `encryptFile`, uploads cipher+metadata to IPFS (InterPlanetary File System). |
 | **Verify Uploaded Document** | `POST /api/verify` | [server.js:L714](./backend/server.js#L714) | Computes a local hash on the uploaded file and checks it on-chain. |
 | **Verify Digest** | `POST /api/verify-hash` | [server.js:L750](./backend/server.js#L750) | Checks a client-supplied hex digest directly against the blockchain. |
-| **Download Document** | `GET /api/documents/:hash/download` | [server.js:L780](./backend/server.js#L780) | Verifies authority, fetches from IPFS, decrypts payload, and serves bytes. |
+| **Download Document** | `GET /api/documents/:hash/download` | [server.js:L780](./backend/server.js#L780) | Verifies authority, fetches from IPFS (InterPlanetary File System), decrypts payload, and serves bytes. |
+| **Get User Documents** | `GET /api/documents` | [server.js:L496](./backend/server.js#L496) | Fetches user's owned and shared accessible document metadata (powers the paper's "My Documents" panel). |
+| **Get Shared Documents** | `GET /api/shared-documents` | [server.js:L969](./backend/server.js#L969) | Retrieves enriched metadata for documents shared with the caller wallet. |
+| **Share Document Record** | `POST /api/shared-record` | [server.js:L987](./backend/server.js#L987) | Persists off-chain routing record when sharing a document with a designated viewer address. |
+| **Revoke Shared Record** | `DELETE /api/shared-record` | [server.js:L1023](./backend/server.js#L1023) | Removes off-chain shared document routing record for a designated viewer address. |
+| **Delete Document Record** | `DELETE /api/documents/:hash` | [server.js:L1057](./backend/server.js#L1057) | Purges local server-side routing metadata for a document owned by the caller. |
 
 ---
 
 ## 3. Client Application (Frontend & Cryptography)
-The React client manages wallet logins, transaction signing, data preparation, and interface presentation.
+The React client manages wallet logins, transaction signing, data preparation, and UI (User Interface) presentation.
 
 * **Main App File:** [`frontend/src/App.tsx`](./frontend/src/App.tsx)
-* **API Client File:** [`frontend/src/api.ts`](./frontend/src/api.ts)
-* **Crypto SDK:** [`frontend/src/clientCrypto.ts`](./frontend/src/clientCrypto.ts)
+* **API (Application Programming Interface) Client File:** [`frontend/src/api.ts`](./frontend/src/api.ts)
+* **Crypto SDK (Software Development Kit):** [`frontend/src/clientCrypto.ts`](./frontend/src/clientCrypto.ts)
 
 | Paper Capability/Concept | Client-Side Function Name | Location | Description |
 | :--- | :--- | :--- | :--- |
 | **Local Digest Generation** | `extractHash(file: File)` | [App.tsx:L152](./frontend/src/App.tsx#L152) | Generates `keccak256` of a raw file before ledger interactions. |
-| **Wallet-Derived Keys** | `deriveWalletMasterKey(signer, address)` | [clientCrypto.ts:L22](./frontend/src/clientCrypto.ts#L22) | Generates encryption key from signature over a static challenge string. |
-| **Browser AES-GCM Encrypt** | `encryptFileClient(file, key)` | [clientCrypto.ts:L59](./frontend/src/clientCrypto.ts#L59) | Standard client-side AES-256-GCM file encryption. |
-| **Browser AES-GCM Decrypt** | `decryptFileClient(cipher, iv, tag, key)` | [clientCrypto.ts:L90](./frontend/src/clientCrypto.ts#L90) | Standard client-side AES-256-GCM decryption logic. |
-| **Signed-Challenge Headers** | `signAuthHeaders(signer, address)` | [clientCrypto.ts:L119](./frontend/src/clientCrypto.ts#L119) | Creates request headers mapping signature and timestamp to wallet. |
+| **Wallet-Derived Keys** | `deriveWalletMasterKey(signer, address)` | [clientCrypto.ts:L22](./frontend/src/clientCrypto.ts#L22) | Generates encryption key from signature over a static challenge string using PBKDF2 (Password-Based Key Derivation Function 2). |
+| **Browser AES-GCM Encrypt** | `encryptFileClient(file, key)` | [clientCrypto.ts:L59](./frontend/src/clientCrypto.ts#L59) | Standard client-side AES-256-GCM (Advanced Encryption Standard 256-bit Galois/Counter Mode) file encryption. |
+| **Browser AES-GCM Decrypt** | `decryptFileClient(cipher, iv, tag, key)` | [clientCrypto.ts:L90](./frontend/src/clientCrypto.ts#L90) | Standard client-side AES-256-GCM (Advanced Encryption Standard 256-bit Galois/Counter Mode) decryption logic with IV (Initialisation Vector) and auth tag verification. |
+| **Signed-Challenge Headers** | `signAuthHeaders(signer, address)` | [clientCrypto.ts:L119](./frontend/src/clientCrypto.ts#L119) | Creates request headers mapping signature and timestamp to wallet using EIP-191 (Ethereum Improvement Proposal 191). |
+| **Download & Integrity Attestation** | Download & hash re-verification flow | [App.tsx:L138-L155](./frontend/src/App.tsx#L138-L155) | Downloads file bytes, validates headers, and populates the paper's "Hash Verified" attestation panel. |
 
 ---
 
@@ -123,7 +129,7 @@ Direct Location: [DocumentRegistry.sol:L116-L141](./contracts/DocumentRegistry.s
 /**
  * @notice Registers a new document hash on the blockchain
  * @param hash The keccak256 hash of the document (bytes32 = 32 bytes = 256 bits)
- * @param cid The IPFS Content Identifier where the actual file is stored (kept off-chain)
+ * @param cid The IPFS (InterPlanetary File System) Content Identifier where the actual file is stored (kept off-chain)
  */
 function registerDocument(bytes32 hash, string calldata cid) external {
     require(documents[hash].owner == address(0), "Document already exists");
@@ -152,7 +158,7 @@ Direct Location: [DocumentRegistry.sol:L150-L171](./contracts/DocumentRegistry.s
  * @notice Adds a new version under an existing document root
  * @param rootHash The original (version 1) document hash
  * @param hash The new version's document hash
- * @param cid The IPFS CID for this new version
+ * @param cid The IPFS (InterPlanetary File System) CID (Content Identifier) for this new version
  * @dev Only the root owner can add versions. Root must not be revoked.
  */
 function addDocumentVersion(bytes32 rootHash, bytes32 hash, string calldata cid) external {
@@ -231,12 +237,12 @@ function revokeDocumentRoot(bytes32 rootHash) external {
 Direct Location: [clientCrypto.ts:L22-L55](./frontend/src/clientCrypto.ts#L22-L55)
 ```typescript
 /**
- * Derives a 256-bit AES-GCM CryptoKey from a wallet signature using PBKDF2.
+ * Derives a 256-bit AES-GCM (Advanced Encryption Standard — Galois/Counter Mode) CryptoKey from a wallet signature using PBKDF2 (Password-Based Key Derivation Function 2).
  */
 export async function deriveWalletMasterKey(signer: ethers.Signer, walletAddress: string): Promise<CryptoKey> {
   const normalizedAddr = walletAddress.toLowerCase();
   const challenge = `BDVS Encryption Key Generation: ${normalizedAddr}`;
-  const signature = await signer.signMessage(challenge); // EIP-191 message signing prompt
+  const signature = await signer.signMessage(challenge); // EIP-191 (Ethereum Improvement Proposal 191) message signing prompt
 
   const encoder = new TextEncoder();
   const signatureBytes = encoder.encode(signature);
@@ -272,7 +278,7 @@ export async function deriveWalletMasterKey(signer: ethers.Signer, walletAddress
 Direct Location: [clientCrypto.ts:L119-L135](./frontend/src/clientCrypto.ts#L119-L135)
 ```typescript
 /**
- * Generates EIP-191 cryptographic wallet signature headers to prove key ownership.
+ * Generates EIP-191 (Ethereum Improvement Proposal 191) cryptographic wallet signature headers to prove key ownership.
  */
 export async function signAuthHeaders(signer: ethers.Signer, walletAddress: string): Promise<SignedAuthHeaders> {
   const timestamp = Date.now();
@@ -303,13 +309,13 @@ async function extractHash(file: File) {
 
 To bridge the theoretical/architectural concepts described in the paper with the running codebase, the implementation coordinates specific tradeoffs and structures:
 
-### A. Cryptographic Hashing Integration (Keccak256 vs. SHA-256)
-The research paper specifies the use of `keccak256` for EVM gas efficiency and on-chain consistency. In this implementation, the utility function representing this operation is named `hashFileSha256` in [chain.js](./backend/chain.js#L655) to maintain backwards compatibility with earlier API versions. However, it computes a standard `keccak256` digest via `ethers.keccak256` to align with the paper's EVM-native model. Legacy SHA-256 records are handled via `hashFileSha256Legacy` to preserve validation compatibility for early registries.
+### A. Cryptographic Hashing Integration (Keccak256 vs. SHA-256 [Secure Hash Algorithm 256-bit])
+The research paper specifies the use of `keccak256` for EVM (Ethereum Virtual Machine) gas efficiency and on-chain consistency. In this implementation, the utility function representing this operation is named `hashFileSha256` in [chain.js](./backend/chain.js#L655) to maintain backwards compatibility with earlier API (Application Programming Interface) versions. However, it computes a standard `keccak256` digest via `ethers.keccak256` to align with the paper's EVM (Ethereum Virtual Machine)-native model. Legacy SHA-256 (Secure Hash Algorithm 256-bit) records are handled via `hashFileSha256Legacy` to preserve validation compatibility for early registries.
 
 ### B. Encryption Pipeline & Resource Optimization (Client-Side vs. Backend-Assisted)
 The paper outlines a model where all symmetric file encryption and decryption are executed locally in the browser to maintain a zero-knowledge relay backend.
-* **Client-Side Utilities:** The browser-based encryption/decryption routines (`deriveWalletMasterKey`, `encryptFileClient`, `decryptFileClient`) are fully implemented and available in [clientCrypto.ts](./frontend/src/clientCrypto.ts) using the native browser Web Crypto API.
-* **Backend-Assisted Pipeline:** For the demo and prototype setup, the active pipeline utilizes backend-assisted encryption and decryption (`handleUpload` in [server.js](./backend/server.js#L551)) using Node's `crypto` module. This design choice optimizes browser thread utilization during large file uploads in web UI environments, while using the same key-wrapping logic (via metadata envelopes/manifest CIDs) described in the paper.
+* **Client-Side Utilities:** The browser-based encryption/decryption routines (`deriveWalletMasterKey`, `encryptFileClient`, `decryptFileClient`) are fully implemented and available in [clientCrypto.ts](./frontend/src/clientCrypto.ts) using the native browser Web Crypto API (Application Programming Interface).
+* **Backend-Assisted Pipeline:** For the demo and prototype setup, the active pipeline utilizes backend-assisted encryption and decryption (`handleUpload` in [server.js](./backend/server.js#L551)) using Node's `crypto` module. This design choice optimizes browser thread utilization during large file uploads in web UI (User Interface) environments, while using the same key-wrapping logic (via metadata envelopes/manifest CIDs [Content Identifiers]) described in the paper.
 
 ### C. Requester Identity & Signature Verification
 To authenticate requests, the client generates cryptographic proof headers (address, signature, and timestamp) using `signAuthHeaders()` in [clientCrypto.ts](./frontend/src/clientCrypto.ts#L119). In this version of the prototype, the backend extracts the requester's address via `getRequesterAddress()` in [server.js](./backend/server.js#L95) to coordinate contract-level authorization queries, laying the groundwork for full cryptographic signature recovery (`ecrecover`) in production-ready environments.
