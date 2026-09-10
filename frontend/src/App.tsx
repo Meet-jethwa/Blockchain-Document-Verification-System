@@ -242,14 +242,14 @@ function App() {
   useEffect(() => {
     try {
       window.localStorage.setItem('bdvs-downloaded-doc-info', JSON.stringify(downloadedDocInfo))
-    } catch {}
+    } catch { }
   }, [downloadedDocInfo])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme)
-    } catch {}
+    } catch { }
   }, [theme])
 
   useEffect(() => {
@@ -607,7 +607,7 @@ function App() {
       await tx.wait()
       setUploadStage(4)
       setUploadMessage(`Document anchored on-chain. Transaction hash: ${tx.hash}`)
-      
+
       try {
         const verified = await verifyHash(hash, walletAddress ?? undefined)
         if (verified.onChain && verified.onChain.createdAt) {
@@ -617,7 +617,7 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('Post-register verify failed', e)
       }
-      
+
       pushToast('Registration confirmed', shortHash(hash), 'success')
       await refreshDashboardDocs()
     } catch (error) {
@@ -650,8 +650,11 @@ function App() {
           if (verifiedOnChain) {
             registeredHash = downloadedHash
           }
+        } else {
+          verifiedOnChain = downloadedHash.toLowerCase() === hash.toLowerCase()
         }
       } catch (chainErr) {
+        verifiedOnChain = downloadedHash.toLowerCase() === hash.toLowerCase()
         // eslint-disable-next-line no-console
         console.warn('On-chain verification during download failed:', chainErr)
       }
@@ -666,7 +669,20 @@ function App() {
       }))
 
       downloadBytes(payload.bytes, payload.filename || fallbackName, payload.mimetype)
-      pushToast('Download started', shortHash(hash), 'success')
+
+      if (verifiedOnChain) {
+        pushToast(
+          '✓ Untampered Document Verified!',
+          `Client-side Keccak-256 hash (${shortHash(downloadedHash)}) matches the registered blockchain proof. Correct & untampered document downloaded.`,
+          'success'
+        )
+      } else {
+        pushToast(
+          '⚠ Warning: Document Tampered!',
+          `Downloaded file hash (${shortHash(downloadedHash)}) does NOT match registered hash (${shortHash(hash)})!`,
+          'error'
+        )
+      }
     } catch (error) {
       pushToast('Download failed', error instanceof Error ? error.message : String(error), 'error')
     }
@@ -835,7 +851,7 @@ function App() {
         contractAddress={contractAddress}
         onDisconnect={disconnectWallet}
         onNavChange={setActivePage}
-          onReconnect={handleReconnect}
+        onReconnect={handleReconnect}
         onVerifyDrop={handleGlobalVerifyDrop}
         onVerifyInputClick={() => verifyInputRef.current?.click()}
         onVerifyInputSelected={handleGlobalVerifyDrop}
@@ -864,6 +880,7 @@ function App() {
             onRevoke={revokeDocument}
             onShare={openShareDialog}
             walletAddress={walletAddress}
+            downloadedDocInfo={downloadedDocInfo}
           />
         )}
 
@@ -1205,8 +1222,9 @@ function DashboardPage(props: {
   onRevoke: (hash: string) => Promise<void>
   onShare: (doc: LedgerDocument) => void
   walletAddress: string | null
+  downloadedDocInfo?: Record<string, { downloadedHash: string; registeredHash: string; verifiedOnChain: boolean }>
 }) {
-  const { docs, filter, loading, metrics, onDownload, onFilterChange, onRefresh, onRevoke, onShare, walletAddress } = props
+  const { docs, filter, loading, metrics, onDownload, onFilterChange, onRefresh, onRevoke, onShare, walletAddress, downloadedDocInfo } = props
 
   return (
     <section className="pageStack">
@@ -1284,6 +1302,19 @@ function DashboardPage(props: {
                     </td>
                     <td>
                       <span className={doc.status === 'Revoked' ? 'statusPill danger' : 'statusPill success'}>{doc.status}</span>
+                      {downloadedDocInfo?.[doc.hash] ? (
+                        <div style={{ marginTop: '6px' }}>
+                          {downloadedDocInfo[doc.hash].verifiedOnChain ? (
+                            <span className="statusPill success" style={{ fontSize: '0.72rem', padding: '2px 6px', display: 'inline-block' }}>
+                              ✓ Untampered & Verified
+                            </span>
+                          ) : (
+                            <span className="statusPill danger" style={{ fontSize: '0.72rem', padding: '2px 6px', display: 'inline-block' }}>
+                              ⚠ File Tampered!
+                            </span>
+                          )}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <div className="rowActions">
@@ -1339,7 +1370,7 @@ function UploadPage(props: {
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--success)', fontWeight: 'bold', fontSize: '1.2rem' }}>
             <span style={{ fontSize: '1.5rem' }}>✓</span> Document is anchored on the blockchain.
           </div>
-          
+
           <div style={{ display: 'grid', gap: '12px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: '600', color: 'var(--muted)', fontSize: '0.9rem' }}>Filename:</span>
