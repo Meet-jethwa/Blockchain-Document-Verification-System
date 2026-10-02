@@ -7,4 +7,4 @@ backend/.env
 .DS_Store
 backend/data/
 Blockchain-Document-Verification-System/
-
+*.zip
