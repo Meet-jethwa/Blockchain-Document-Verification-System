@@ -39,6 +39,14 @@ type ProfileState = UserProfile
 
 const THEME_STORAGE_KEY = 'bdvs-theme'
 
+// Resolved backend origin — used by signAuthHeaders to fetch one-time nonces
+// from GET /api/auth/nonce (domain-bound auth, closes replay-attack gap).
+const BACKEND_BASE_URL: string | undefined = (() => {
+  const env = (import.meta as any).env
+  const raw = env?.VITE_API_URL || env?.VITE_API_BASE_URL
+  return raw ? String(raw).replace(/\/+$/, '') : undefined
+})()
+
 const DOCUMENT_REGISTRY_ABI = [
   'function registerDocument(bytes32 hash, string cid) external',
   'function revokeDocument(bytes32 hash) external',
@@ -333,7 +341,7 @@ function App() {
           try {
             const provider = new ethers.BrowserProvider(ethereum)
             const signer = await provider.getSigner()
-            const signed = await signAuthHeaders(signer, walletAddress)
+            const signed = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
             authHeaders = signed
           } catch { /* fall through to unauthenticated request */ }
         }
@@ -496,7 +504,7 @@ function App() {
         try {
           const provider = new ethers.BrowserProvider(ethereum)
           const signer = await provider.getSigner()
-          const signed = await signAuthHeaders(signer, walletAddress)
+          const signed = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
           authHeaders = signed
         } catch { /* ignore, will likely fail on server */ }
       }
@@ -555,7 +563,7 @@ function App() {
         try {
           const provider = new ethers.BrowserProvider(ethereum)
           const signer = await provider.getSigner()
-          const signed = await signAuthHeaders(signer, walletAddress)
+          const signed = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
           authHeaders = signed
         } catch { /* fall through without auth headers */ }
       }
@@ -580,7 +588,7 @@ function App() {
         try {
           const provider = new ethers.BrowserProvider(ethereum)
           const signer = await provider.getSigner()
-          const signed = await signAuthHeaders(signer, walletAddress)
+          const signed = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
           authHeaders = signed
         } catch { /* ignore */ }
       }
@@ -616,7 +624,7 @@ function App() {
       const signer = await provider.getSigner()
 
       // A6: Sign auth headers first (used for every subsequent request)
-      const authHeaders = await signAuthHeaders(signer, activeWallet)
+      const authHeaders = await signAuthHeaders(signer, activeWallet, BACKEND_BASE_URL)
 
       // Compute keccak256 of the PLAINTEXT (before encryption) — this is the on-chain digest
       const plainHash = await extractHash(uploadFile)
@@ -701,13 +709,27 @@ function App() {
       setUploadMessage(`Document anchored on-chain. Transaction hash: ${tx.hash}`)
 
       try {
-        const verified = await verifyHash(hash, walletAddress ?? undefined)
-        if (verified.onChain && verified.onChain.createdAt) {
-          setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}. Transaction hash: ${tx.hash}`)
-        }
+        // §IV-A: Read owner + timestamp DIRECTLY from the contract — no backend hop.
+        // This is the canonical on-chain confirmation that the document was registered.
+        const onChainMeta = await contract.getDocumentMeta(hash)
+        const onChainOwner: string = onChainMeta[0]   // address
+        const onChainTs: bigint   = onChainMeta[1]   // uint256 (seconds)
+        setUploadMessage(
+          `Anchored on-chain. Owner: ${shortAddr(onChainOwner)} · ` +
+          `Registered: ${new Date(Number(onChainTs) * 1000).toLocaleString()} · ` +
+          `Tx: ${tx.hash}`
+        )
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('Post-register verify failed', e)
+        // getDocumentMeta failed (network hiccup or provider issue) — fall back to backend
+        try {
+          const verified = await verifyHash(hash, walletAddress ?? undefined)
+          if (verified.onChain && verified.onChain.createdAt) {
+            setUploadMessage(`Anchored at ${new Date(verified.onChain.createdAt * 1000).toLocaleString()}. Transaction hash: ${tx.hash}`)
+          }
+        } catch {
+          // eslint-disable-next-line no-console
+          console.warn('Post-register verify failed', e)
+        }
       }
 
       pushToast('Registration confirmed', shortHash(hash), 'success')
@@ -733,7 +755,7 @@ function App() {
       const signer = await provider.getSigner()
 
       // A4/A6: EIP-191 signed headers for authenticated download
-      const authHeaders = await signAuthHeaders(signer, walletAddress)
+      const authHeaders = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
 
       // B6: Receive raw encrypted blob — server never decrypts
       const payload = await fetchDocumentDownload(hash, walletAddress, authHeaders)
@@ -885,7 +907,7 @@ function App() {
       pushToast('Share pending', `${shortAddr(shareDialog.viewer)} will receive access after confirmation.`, 'info')
       await tx.wait()
       try {
-        const authHeaders = await signAuthHeaders(signer, walletAddress)
+        const authHeaders = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
         await recordSharedDocument(
           shareDialog.viewer,
           {
@@ -934,7 +956,7 @@ function App() {
       await tx.wait()
       try {
         // A3/A6: signed auth headers for DELETE
-        const authHeaders = await signAuthHeaders(signer, walletAddress)
+        const authHeaders = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
         const resolved = '/api/shared-record'
         await fetch(resolved, {
           method: 'DELETE',
@@ -975,7 +997,7 @@ function App() {
       await tx.wait()
       try {
         // A3/A6: signed auth headers for DELETE
-        const authHeaders = await signAuthHeaders(signer, walletAddress)
+        const authHeaders = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
         await fetch(`/api/documents/${hash}`, {
           method: 'DELETE',
           headers: { ...authHeaders },

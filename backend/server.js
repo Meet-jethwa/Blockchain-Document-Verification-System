@@ -129,40 +129,148 @@ function isEthAddress(value) {
  * Returns the verified, normalised Ethereum address on success, or sends an
  * HTTP 401/400 response and returns null on failure.
  */
-const AUTH_PROMPT = "BDVS Authentication: ";
-const REPLAY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+/**
+ * AUTH_DOMAIN provides domain-separation so a signed challenge from one BDVS
+ * deployment (chain + contract) cannot be replayed against a different one.
+ *
+ * Challenge format (§IV-A, revised):
+ *   "BDVS Authentication v2: <chainId>:<contractAddress>:<address>:<nonce>"
+ *
+ * chainId and contractAddress are resolved once at startup via /api/health
+ * and embedded into every server-issued nonce token so the frontend can
+ * reconstruct the same string without an extra RPC call.
+ *
+ * Nonce lifecycle:
+ *   1. Client calls GET /api/auth/nonce?address=<addr> → receives { nonce, chainId, contractAddress, expiresAt }
+ *   2. Client signs the full challenge string with personal_sign (EIP-191)
+ *   3. Client includes x-wallet-nonce in authenticated requests
+ *   4. Server verifies signature, then DELETES the nonce (one-time use)
+ *   5. Nonces expire after NONCE_TTL_MS even if unused
+ */
+const AUTH_PROMPT    = "BDVS Authentication v2: ";
+const NONCE_TTL_MS   = 5 * 60 * 1000; // 5 minutes — short enough to limit replay window
+
+// In-memory nonce store: Map<nonce, { address, chainId, contractAddress, expiresAt }>
+// For multi-instance deployments, replace with a shared Redis/Mongo TTL store.
+const _nonceStore = new Map();
+
+/** Prune expired nonces (called lazily on each verification to avoid a timer). */
+function _pruneNonces() {
+  const now = Date.now();
+  for (const [key, val] of _nonceStore) {
+    if (val.expiresAt < now) _nonceStore.delete(key);
+  }
+}
+
+// Lazily resolved at first request (avoids blocking startup with an RPC call).
+let _authDomain = null;
+async function getAuthDomain() {
+  if (_authDomain) return _authDomain;
+  try {
+    const network = await chain.provider.getNetwork();
+    _authDomain = {
+      chainId:         String(Number(network.chainId)),
+      contractAddress: config.contractAddress.toLowerCase(),
+    };
+  } catch {
+    // Fallback: use a static domain from config so auth still works offline.
+    _authDomain = {
+      chainId:         "unknown",
+      contractAddress: (config.contractAddress ?? "0x0").toLowerCase(),
+    };
+  }
+  return _authDomain;
+}
 
 function verifyAuthHeaders(req, res) {
-  const rawAddr = req.headers["x-wallet-address"];
-  const rawSig  = req.headers["x-wallet-signature"];
-  const rawTs   = req.headers["x-wallet-timestamp"];
+  const rawAddr  = req.headers["x-wallet-address"];
+  const rawSig   = req.headers["x-wallet-signature"];
+  const rawNonce = req.headers["x-wallet-nonce"];
 
-  // Also accept the bare 'wallet-address' header for read-only/unauthenticated paths.
-  // But for any path that calls verifyAuthHeaders we REQUIRE all three signed headers.
-  if (!rawAddr || !rawSig || !rawTs) {
+  // Legacy clients that only send x-wallet-timestamp are still accepted for a
+  // transitional period — but they get a weaker (timestamp-only) guarantee.
+  // Remove the legacy branch once all clients are updated.
+  const rawTs = req.headers["x-wallet-timestamp"];
+
+  if (!rawAddr || !rawSig) {
     res.status(401).json({
       error:
         "Missing authentication headers. " +
-        "Provide x-wallet-address, x-wallet-signature, and x-wallet-timestamp.",
+        "Provide x-wallet-address, x-wallet-signature, and either x-wallet-nonce (preferred) or x-wallet-timestamp.",
     });
     return null;
   }
 
   const address   = String(rawAddr).trim();
   const signature = String(rawSig).trim();
-  const timestamp = Number(String(rawTs).trim());
 
   if (!isEthAddress(address)) {
     res.status(400).json({ error: "Invalid x-wallet-address (expected 0x + 40 hex)" });
     return null;
   }
 
+  _pruneNonces();
+
+  // ── Nonce-based path (preferred, domain-bound, one-time-use) ──────────────
+  if (rawNonce) {
+    const nonce = String(rawNonce).trim();
+    const entry = _nonceStore.get(nonce);
+
+    if (!entry) {
+      res.status(401).json({
+        error: "Unknown or already-consumed nonce. Call GET /api/auth/nonce to obtain a fresh one.",
+      });
+      return null;
+    }
+    if (entry.address.toLowerCase() !== address.toLowerCase()) {
+      res.status(401).json({ error: "Nonce was issued for a different wallet address." });
+      return null;
+    }
+    if (entry.expiresAt < Date.now()) {
+      _nonceStore.delete(nonce);
+      res.status(401).json({ error: "Nonce expired. Call GET /api/auth/nonce to obtain a fresh one." });
+      return null;
+    }
+
+    // Build the domain-bound challenge the client should have signed:
+    //   "BDVS Authentication v2: <chainId>:<contractAddress>:<address>:<nonce>"
+    const challenge = `${AUTH_PROMPT}${entry.chainId}:${entry.contractAddress}:${address.toLowerCase()}:${nonce}`;
+    let recovered;
+    try {
+      recovered = ethers.verifyMessage(challenge, signature);
+    } catch {
+      res.status(401).json({ error: "Malformed signature" });
+      return null;
+    }
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      res.status(401).json({
+        error: "Signature does not match x-wallet-address. Identity spoofing rejected.",
+      });
+      return null;
+    }
+
+    // Consume the nonce — one-time use.
+    _nonceStore.delete(nonce);
+    return address.toLowerCase();
+  }
+
+  // ── Legacy timestamp-based path (transitional, no domain binding) ─────────
+  // TODO: Remove once all clients send x-wallet-nonce.
+  if (!rawTs) {
+    res.status(401).json({
+      error:
+        "Missing x-wallet-nonce. Obtain a nonce from GET /api/auth/nonce and include it as x-wallet-nonce.",
+    });
+    return null;
+  }
+
+  const timestamp = Number(String(rawTs).trim());
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
     res.status(400).json({ error: "Invalid x-wallet-timestamp" });
     return null;
   }
 
-  // Replay-window check (A2)
+  const REPLAY_WINDOW_MS = 5 * 60 * 1000; // tightened from 10 min to 5 min
   const drift = Math.abs(Date.now() - timestamp);
   if (drift > REPLAY_WINDOW_MS) {
     res.status(401).json({
@@ -171,8 +279,7 @@ function verifyAuthHeaders(req, res) {
     return null;
   }
 
-  // EIP-191 signature verification (A1)
-  const challenge = `${AUTH_PROMPT}${address.toLowerCase()}:${timestamp}`;
+  const challenge = `BDVS Authentication: ${address.toLowerCase()}:${timestamp}`;
   let recovered;
   try {
     recovered = ethers.verifyMessage(challenge, signature);
@@ -180,14 +287,12 @@ function verifyAuthHeaders(req, res) {
     res.status(401).json({ error: "Malformed signature" });
     return null;
   }
-
   if (recovered.toLowerCase() !== address.toLowerCase()) {
     res.status(401).json({
       error: "Signature does not match x-wallet-address. Identity spoofing rejected.",
     });
     return null;
   }
-
   return address.toLowerCase();
 }
 
@@ -494,6 +599,48 @@ if (existsSync(publicIndexPath)) {
  * This endpoint is useful for debugging. If backend can't connect to blockchain,
  * this will show the error before you try uploading files.
  */
+/**
+ * GET /api/auth/nonce — Issue a short-lived, address-bound, domain-bound one-time nonce.
+ *
+ * Query params:
+ *   address (required) — the wallet address that will use this nonce
+ *
+ * Response:
+ *   { nonce, chainId, contractAddress, expiresAt, challengeTemplate }
+ *
+ * The client must sign:
+ *   "BDVS Authentication v2: <chainId>:<contractAddress>:<address>:<nonce>"
+ * using personal_sign (EIP-191) and include the result as x-wallet-signature
+ * plus x-wallet-nonce in any authenticated request.
+ */
+app.get("/api/auth/nonce", async (req, res) => {
+  const rawAddr = req.query?.address ?? req.headers["x-wallet-address"];
+  if (!rawAddr || !isEthAddress(String(rawAddr).trim())) {
+    return res.status(400).json({
+      error: "Provide ?address=<0x...> — a valid Ethereum wallet address.",
+    });
+  }
+  const address = String(rawAddr).trim().toLowerCase();
+  const domain  = await getAuthDomain();
+  const nonce   = ethers.hexlify(ethers.randomBytes(16)); // 128-bit random
+  const expiresAt = Date.now() + NONCE_TTL_MS;
+
+  _nonceStore.set(nonce, {
+    address,
+    chainId:         domain.chainId,
+    contractAddress: domain.contractAddress,
+    expiresAt,
+  });
+
+  return res.json({
+    nonce,
+    chainId:         domain.chainId,
+    contractAddress: domain.contractAddress,
+    expiresAt,
+    challengeTemplate: `${AUTH_PROMPT}${domain.chainId}:${domain.contractAddress}:${address}:${nonce}`,
+  });
+});
+
 app.get("/api/health", async (_req, res) => {
   const [blockNumber, network, code] = await Promise.all([
     chain.provider.getBlockNumber(),

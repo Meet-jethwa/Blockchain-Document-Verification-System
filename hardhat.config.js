@@ -44,7 +44,7 @@ if (process.env.AMOY_RPC_URL) {
 }
 
 export default defineConfig({
-  solidity: "0.8.20",
+  solidity: "0.8.24",
   plugins: [hardhatEthers],
   networks,
 });

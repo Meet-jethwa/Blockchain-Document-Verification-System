@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // This specifies the software license (MIT is open-source)
-pragma solidity ^0.8.20; // Specifies the Solidity compiler version to use
+pragma solidity 0.8.24; // Pinned to avoid VerbatimInvalidDeduplication, FullInlinerNonExpressionSplitArgumentEvaluationOrder, MissingSideEffectsOnSelectorAccess (Slither solc-version)
 
 /**
  * @title DocumentRegistry
@@ -79,11 +79,6 @@ contract DocumentRegistry {
         return _exists(hash) && documents[hash].rootHash == hash;
     }
 
-    function _rootOf(bytes32 hash) internal view returns (bytes32) {
-        Document storage d = documents[hash];
-        require(d.owner != address(0), "Document not found");
-        return d.rootHash;
-    }
 
     function _isRevoked(bytes32 hash) internal view returns (bool) {
         if (!_exists(hash)) return false;
