@@ -641,6 +641,92 @@ app.get("/api/auth/nonce", async (req, res) => {
   });
 });
 
+// ── Grantee P-256 public key registry (§IV-C) ──────────────────────────────
+//
+// Grantees call publishP256PublicKey() (clientCrypto.ts) once in their own
+// session.  The resulting SPKI-hex is stored here, keyed by wallet address.
+// Owners then GET it before calling wrapKeyForGrantee() — they never need
+// the grantee's Signer.
+//
+// In-process Map (same pattern as _nonceStore).  For multi-instance deployments
+// this should be replaced with a Redis or database-backed store.
+const _p256PubKeyStore = new Map(); // address (lowercase) → { spkiHex, derivedAt }
+
+/**
+ * POST /api/users/:address/p256-pubkey
+ *
+ * Body: { spkiHex: string, derivedAt: number }
+ * Requires: valid wallet auth headers (the grantee must sign the request)
+ *
+ * Stores the grantee's P-256 public key SPKI hex so document owners can
+ * fetch it without ever needing the grantee's live Signer.
+ */
+app.post("/api/users/:address/p256-pubkey", async (req, res) => {
+  try {
+    const paramAddr = req.params.address?.toLowerCase();
+    if (!paramAddr || !isEthAddress(paramAddr)) {
+      return res.status(400).json({ error: "Invalid Ethereum address in path." });
+    }
+
+    // Auth: the signer must be the address in the path
+    const authedAddr = verifyAuthHeaders(req, res);
+    if (!authedAddr) return; // verifyAuthHeaders already sent 401
+    if (authedAddr !== paramAddr) {
+      return res.status(403).json({
+        error: "Authenticated address does not match the :address parameter.",
+      });
+    }
+
+    const { spkiHex, derivedAt } = req.body ?? {};
+    if (typeof spkiHex !== "string" || !/^[0-9a-f]+$/i.test(spkiHex) || spkiHex.length < 100) {
+      return res.status(400).json({ error: "spkiHex must be a non-empty hex string (≥50 bytes SPKI)." });
+    }
+
+    _p256PubKeyStore.set(paramAddr, {
+      address:   paramAddr,
+      spkiHex:   spkiHex.toLowerCase(),
+      derivedAt: typeof derivedAt === "number" ? derivedAt : Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    return res.status(201).json({ ok: true, address: paramAddr });
+  } catch (err) {
+    console.error("POST /api/users/:address/p256-pubkey error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/users/:address/p256-pubkey
+ *
+ * Returns the grantee's P-256 public key SPKI hex, or 404 if not yet published.
+ * No auth required — this is a public lookup (SPKI is a public key by definition).
+ */
+app.get("/api/users/:address/p256-pubkey", async (req, res) => {
+  try {
+    const paramAddr = req.params.address?.toLowerCase();
+    if (!paramAddr || !isEthAddress(paramAddr)) {
+      return res.status(400).json({ error: "Invalid Ethereum address in path." });
+    }
+
+    const entry = _p256PubKeyStore.get(paramAddr);
+    if (!entry) {
+      return res.status(404).json({
+        error:
+          "No P-256 public key found for this address. " +
+          "The grantee must call publishP256PublicKey() and POST to this endpoint first.",
+      });
+    }
+
+    return res.json(entry);
+  } catch (err) {
+    console.error("GET /api/users/:address/p256-pubkey error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
 app.get("/api/health", async (_req, res) => {
   const [blockNumber, network, code] = await Promise.all([
     chain.provider.getBlockNumber(),

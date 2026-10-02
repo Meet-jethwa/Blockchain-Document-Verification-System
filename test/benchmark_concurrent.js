@@ -4,6 +4,13 @@
  * Addresses Reviewer comment: "no concurrent-request pattern exists — still
  * single-threaded, single-session benchmarking."
  *
+ * Scope / caveat (§10.1): This benchmark tests concurrent application-layer
+ * request handling against a single in-process Hardhat node, which is a
+ * realistic simulation of multi-browser/multi-wallet concurrency at the
+ * application level but does not reproduce distributed-network effects
+ * (mempool contention across independent nodes, gas-price auctions, or P2P
+ * propagation delays) that a public testnet would exhibit.
+ *
  * This harness:
  *   1. Spins up N concurrent "virtual users" (Promise.all over async workers).
  *   2. Each virtual user independently deploys, uploads a file hash, registers
@@ -235,14 +242,50 @@ export async function runConcurrentBenchmark() {
 
   // ── Per-user breakdown ─────────────────────────────────────────────────────
   console.log('\n  Per-user registration latency breakdown (median ms):');
+  const perUserRows = [];
   for (const r of results) {
     const sorted = [...r.regLatencies].sort((a, b) => a - b);
-    console.log(`    user-${String(r.userIdx).padStart(2, '0')}: median=${fmt(median(sorted))}  p95=${fmt(percentile(sorted, 95))}  gasMedian=${median([...r.regGasUnits].sort((a,b)=>a-b)).toFixed(0)}`);
+    const gasSorted = [...r.regGasUnits].sort((a, b) => a - b);
+    const row = {
+      userId:      r.userIdx,
+      regMedian:   median(sorted),
+      regP95:      percentile(sorted, 95),
+      gasMedian:   median(gasSorted),
+    };
+    perUserRows.push(row);
+    console.log(`    user-${String(r.userIdx).padStart(2, '0')}: median=${fmt(row.regMedian)}  p95=${fmt(row.regP95)}  gasMedian=${row.gasMedian.toFixed(0)}`);
   }
 
   console.log('\n' + '='.repeat(70));
   console.log('  Concurrent benchmark complete.');
   console.log('='.repeat(70) + '\n');
+
+  // ── Return structured stats for run_all.js markdown generation ────────────
+  function statBlock(obs) {
+    const sorted = [...obs].sort((a, b) => a - b);
+    const { mean, ci95 } = meanCI95(obs);
+    return {
+      n:       obs.length,
+      min:     sorted[0],
+      median:  median(sorted),
+      mean,
+      ci95,
+      p95:     percentile(sorted, 95),
+      p99:     percentile(sorted, 99),
+      max:     sorted[sorted.length - 1],
+    };
+  }
+
+  return {
+    config:   { nUsers: N_USERS, nReps: N_REPS, totalOps },
+    wallMs:   { phase1: phase1Ms, phase2: phase2Ms, total: phase1Ms + phase2Ms },
+    throughputRegPerSec: parseFloat(throughput),
+    registerLatencyMs:   statBlock(allRegLatencies),
+    gasUnits:            statBlock(allRegGasUnits),
+    verifyLatencyMs:     statBlock(allVerifyLatencies),
+    readLatencyMs:       statBlock(allReadLatencies),
+    perUserRows,
+  };
 }
 
 // Auto-run when executed directly

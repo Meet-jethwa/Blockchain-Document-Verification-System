@@ -176,6 +176,46 @@ Measured throughput (MB/s), mean latency ($\\mu$), sample standard deviation ($\
 `;
   }
 
+  // ── Section 5: Concurrent Load Benchmark ────────────────────────────────
+  if (concurrentData) {
+    const cd = concurrentData;
+    const fmtStat = (s) =>
+      `min=${s.min.toFixed(1)} ms | median=${s.median.toFixed(1)} ms | mean=${s.mean.toFixed(1)} ±${s.ci95.toFixed(1)} ms (95% CI) | p95=${s.p95.toFixed(1)} ms | p99=${s.p99.toFixed(1)} ms | max=${s.max.toFixed(1)} ms`;
+
+    mdContent += `---
+
+## 5. Concurrent Load Benchmark (§10.1 — Reviewer Concurrency Gap)
+
+**Configuration:** ${cd.config.nUsers} concurrent virtual users × ${cd.config.nReps} reps = **${cd.config.totalOps} total operations**  
+**Wall-clock time:** Phase 1 (register+verify): ${cd.wallMs.phase1} ms | Phase 2 (reads): ${cd.wallMs.phase2} ms | Total: ${cd.wallMs.total} ms  
+**Throughput:** **${cd.throughputRegPerSec} registrations/sec** (${cd.config.nUsers} concurrent users, wall clock)
+
+> **Scope note (§10.1):** This benchmark tests concurrent application-layer request handling
+> against a single in-process Hardhat node. It is a realistic simulation of multi-browser /
+> multi-wallet concurrency at the application level, but does not reproduce distributed-network
+> effects (mempool contention across independent nodes, gas-price auctions, or P2P propagation
+> delays) that a public testnet or multi-node deployment would exhibit.
+
+### A. Aggregate Statistics (n=${cd.registerLatencyMs.n} observations per metric)
+
+| Metric | min | median | mean ± 95% CI | p95 | p99 | max |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **registerDocument() latency (ms)** | ${cd.registerLatencyMs.min.toFixed(1)} | ${cd.registerLatencyMs.median.toFixed(1)} | ${cd.registerLatencyMs.mean.toFixed(1)} ±${cd.registerLatencyMs.ci95.toFixed(1)} | ${cd.registerLatencyMs.p95.toFixed(1)} | ${cd.registerLatencyMs.p99.toFixed(1)} | ${cd.registerLatencyMs.max.toFixed(1)} |
+| **registerDocument() gas (units)** | ${cd.gasUnits.min.toFixed(0)} | ${cd.gasUnits.median.toFixed(0)} | ${cd.gasUnits.mean.toFixed(0)} ±${cd.gasUnits.ci95.toFixed(0)} | ${cd.gasUnits.p95.toFixed(0)} | ${cd.gasUnits.p99.toFixed(0)} | ${cd.gasUnits.max.toFixed(0)} |
+| **verifyDocument() latency (ms)** | ${cd.verifyLatencyMs.min.toFixed(1)} | ${cd.verifyLatencyMs.median.toFixed(1)} | ${cd.verifyLatencyMs.mean.toFixed(1)} ±${cd.verifyLatencyMs.ci95.toFixed(1)} | ${cd.verifyLatencyMs.p95.toFixed(1)} | ${cd.verifyLatencyMs.p99.toFixed(1)} | ${cd.verifyLatencyMs.max.toFixed(1)} |
+| **getDocumentMeta() latency (ms)** | ${cd.readLatencyMs.min.toFixed(1)} | ${cd.readLatencyMs.median.toFixed(1)} | ${cd.readLatencyMs.mean.toFixed(1)} ±${cd.readLatencyMs.ci95.toFixed(1)} | ${cd.readLatencyMs.p95.toFixed(1)} | ${cd.readLatencyMs.p99.toFixed(1)} | ${cd.readLatencyMs.max.toFixed(1)} |
+
+### B. Per-User Registration Latency Breakdown
+
+| User | Median latency (ms) | p95 latency (ms) | Median gas (units) |
+| :--- | :--- | :--- | :--- |
+`;
+    for (const row of cd.perUserRows) {
+      mdContent += `| user-${String(row.userId).padStart(2, '0')} | ${row.regMedian.toFixed(1)} | ${row.regP95.toFixed(1)} | ${row.gasMedian.toFixed(0)} |\n`;
+    }
+    mdContent += `\n`;
+  }
+
   fs.writeFileSync(mdReportPath, mdContent, 'utf8');
   console.log(`\n[✔] Benchmarks complete! Report saved to: ${mdReportPath}`);
 }
