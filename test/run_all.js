@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { runHashBenchmarks } from './benchmark_hashing.js';
 import { runGasBenchmark } from './benchmark_gas.js';
 import { runBaselineBenchmarks } from './benchmark_network_baselines.js';
+import { runConcurrentBenchmark } from './benchmark_concurrent.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +22,16 @@ async function main() {
   console.log('\nRunning Architectural Baseline Comparisons...');
   const baselineData = runBaselineBenchmarks({ iterations: 30, sizeKB: 1024 });
 
-  // 3. Run EVM Smart Contract Gas Consumption Benchmarks
+  // 3. Run Concurrent / Multi-Session Load Benchmark
+  console.log('\nRunning concurrent load benchmark (multi-user, multi-session)…');
+  let concurrentData = null;
+  try {
+    concurrentData = await runConcurrentBenchmark();
+  } catch (err) {
+    console.error('Failed to run concurrent benchmark:', err.message);
+  }
+
+  // 4. Run EVM Smart Contract Gas Consumption Benchmarks
   console.log('\nStarting EVM Gas Consumption Analysis via Hardhat local node...');
   let gasData = null;
   try {
