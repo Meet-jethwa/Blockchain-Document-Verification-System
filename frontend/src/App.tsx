@@ -2,8 +2,8 @@ import './App.css'
 import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
-import { fetchDocuments, fetchProfile, fetchSharedDocuments, postFileWithProgress, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
-import { signAuthHeaders } from './clientCrypto'
+import { fetchDocuments, fetchProfile, fetchSharedDocuments, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
+import { signAuthHeaders, deriveWalletMasterKey, encryptFileClient, decryptFileClient } from './clientCrypto'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -190,9 +190,12 @@ async function fetchDocumentDownload(hash: string, walletAddress: string, header
   const bytes = new Uint8Array(await response.arrayBuffer())
   const contentDisposition = response.headers.get('content-disposition') || ''
   const match = /filename="?([^";]+)"?/i.exec(contentDisposition)
-  const filename = match?.[1] || 'document'
+  const filenameFromDisposition = match?.[1] || 'document'
+  // Prefer X-Original-Filename (set by server for E2EE docs — the clean name before encryption)
+  const originalFilename = response.headers.get('x-original-filename') || filenameFromDisposition.replace(/\.enc$/, '')
+  const originalMimetype = response.headers.get('x-original-mimetype') || null
   const mimetype = response.headers.get('content-type') || 'application/octet-stream'
-  return { bytes, filename, mimetype }
+  return { bytes, filename: filenameFromDisposition, originalFilename, originalMimetype, mimetype }
 }
 
 function App() {
@@ -323,7 +326,18 @@ function App() {
     setProfileLoading(true)
     void (async () => {
       try {
-        const response = await fetchProfile(walletAddress)
+        // A4: sign auth headers for wallet-gated profile read
+        let authHeaders: Record<string, string> = {}
+        const ethereum = window.ethereum
+        if (ethereum) {
+          try {
+            const provider = new ethers.BrowserProvider(ethereum)
+            const signer = await provider.getSigner()
+            const signed = await signAuthHeaders(signer, walletAddress)
+            authHeaders = signed
+          } catch { /* fall through to unauthenticated request */ }
+        }
+        const response = await fetchProfile(walletAddress, authHeaders)
         if (cancelled) return
         setProfile(response.profile)
         setTheme(response.profile.preferredTheme)
@@ -475,6 +489,17 @@ function App() {
 
     setProfileSaving(true)
     try {
+      // A3/A6: signed auth headers for mutating profile route
+      const ethereum = window.ethereum
+      let authHeaders: Record<string, string> = {}
+      if (ethereum) {
+        try {
+          const provider = new ethers.BrowserProvider(ethereum)
+          const signer = await provider.getSigner()
+          const signed = await signAuthHeaders(signer, walletAddress)
+          authHeaders = signed
+        } catch { /* ignore, will likely fail on server */ }
+      }
       const response = await saveProfile(walletAddress, {
         name: profile.name,
         title: profile.title,
@@ -482,10 +507,10 @@ function App() {
         bio: profile.bio,
         photoDataUrl: profile.photoDataUrl,
         preferredTheme: profile.preferredTheme,
-      })
+      }, authHeaders)
       setProfile(response.profile)
       setTheme(response.profile.preferredTheme)
-      pushToast('Profile saved', 'Your profile was stored in MongoDB.', 'success')
+      pushToast('Profile saved', 'Your profile was stored successfully.', 'success')
     } catch (error) {
       pushToast('Profile save failed', error instanceof Error ? error.message : String(error), 'error')
     } finally {
@@ -496,6 +521,7 @@ function App() {
   async function verifyFile(file: File) {
     setVerifyBusy(true)
     try {
+      // G1/F1: Compute hash client-side and send only the digest — no file upload
       const hash = await extractHash(file)
       const response = await verifyHash(hash, walletAddress ?? undefined)
       setVerifyPreview({
@@ -522,7 +548,18 @@ function App() {
     if (!walletAddress) return
     setDashboardLoading(true)
     try {
-      const collections = await fetchDocuments(walletAddress)
+      // A6: attach EIP-191 auth headers for wallet-gated read
+      const ethereum = window.ethereum
+      let authHeaders: Record<string, string> = {}
+      if (ethereum) {
+        try {
+          const provider = new ethers.BrowserProvider(ethereum)
+          const signer = await provider.getSigner()
+          const signed = await signAuthHeaders(signer, walletAddress)
+          authHeaders = signed
+        } catch { /* fall through without auth headers */ }
+      }
+      const collections = await fetchDocuments(walletAddress, authHeaders)
       setDashboardDocs(collections.owned)
       setSharedDocs(collections.shared)
     } catch (error) {
@@ -536,7 +573,18 @@ function App() {
     if (!walletAddress) return
     setSharedLoading(true)
     try {
-      const result = await fetchSharedDocuments(walletAddress)
+      // A6: attach EIP-191 auth headers
+      const ethereum = window.ethereum
+      let authHeaders: Record<string, string> = {}
+      if (ethereum) {
+        try {
+          const provider = new ethers.BrowserProvider(ethereum)
+          const signer = await provider.getSigner()
+          const signed = await signAuthHeaders(signer, walletAddress)
+          authHeaders = signed
+        } catch { /* ignore */ }
+      }
+      const result = await fetchSharedDocuments(walletAddress, authHeaders)
       setSharedDocs(result.shared)
     } catch (error) {
       pushToast('Shared docs load failed', error instanceof Error ? error.message : String(error), 'error')
@@ -557,7 +605,7 @@ function App() {
     }
     setUploadBusy(true)
     setUploadStage(1)
-    setUploadMessage('Encrypting and uploading through the backend.')
+    setUploadMessage('Deriving encryption key from wallet signature…')
     try {
       if (!walletAddress) {
         await ethereum.request({ method: 'eth_requestAccounts' })
@@ -566,21 +614,65 @@ function App() {
       const activeWallet = walletAddress ?? (((await ethereum.request({ method: 'eth_accounts' })) as string[])[0] ?? null)
       const provider = new ethers.BrowserProvider(ethereum)
       const signer = await provider.getSigner()
-      let authHeaders: Record<string, string> = { 'wallet-address': activeWallet }
-      try {
-        const signed = await signAuthHeaders(signer, activeWallet)
-        authHeaders = { ...authHeaders, ...signed }
-      } catch {
-        // Fallback to basic header if signature cancelled
-      }
 
+      // A6: Sign auth headers first (used for every subsequent request)
+      const authHeaders = await signAuthHeaders(signer, activeWallet)
+
+      // Compute keccak256 of the PLAINTEXT (before encryption) — this is the on-chain digest
+      const plainHash = await extractHash(uploadFile)
+      setUploadHash(plainHash)
+
+      // B5: Derive document-bound key (Sign: "BDVS Encryption Key Generation: <addr>:<hash>") and encrypt file entirely in browser
+      setUploadMessage('Encrypting file client-side with document-bound key…')
+      const masterKey = await deriveWalletMasterKey(signer, activeWallet, plainHash)
+      const encrypted = await encryptFileClient(uploadFile, masterKey)
+
+      // Pack payload [12-byte IV][ciphertext][16-byte authTag] into a Blob for upload
+      const combined = new Uint8Array(encrypted.iv.length + encrypted.ciphertext.length + encrypted.authTag.length)
+      combined.set(encrypted.iv, 0)
+      combined.set(encrypted.ciphertext, encrypted.iv.length)
+      combined.set(encrypted.authTag, encrypted.iv.length + encrypted.ciphertext.length)
+      const ciphertextBlob = new Blob([combined], { type: 'application/octet-stream' })
+      const ciphertextFile = new File([ciphertextBlob], uploadFile.name + '.enc')
+
+      setUploadMessage('Uploading encrypted ciphertext to IPFS via backend relay…')
       setUploadProgress(0)
-      const uploadResponse = await postFileWithProgress<RegisterResponse>(
-        '/api/upload',
-        uploadFile,
-        { headers: authHeaders },
-        (percent) => setUploadProgress(percent),
-      )
+
+      // B5: Upload pre-encrypted ciphertext; server never sees the plaintext
+      const formData = new FormData()
+      formData.append('file', ciphertextFile)
+      formData.append('hash', plainHash)                          // B1: client-computed digest
+      formData.append('name', uploadFile.name)                    // original filename
+      formData.append('mimetype', uploadFile.type || 'application/octet-stream')
+      formData.append('originalSize', String(uploadFile.size))    // pre-encryption size
+      formData.append('alg', encrypted.alg)                       // G1: algorithm label
+      // 12-byte IV is prepended to ciphertext file — relay stores raw blob content-blindly
+      // (in a production system, wrap the IV encrypted under the master key and store alongside)
+
+      const uploadResponse = await new Promise<RegisterResponse>((resolve, reject) => {
+        const resolved = resolveUrl('/api/upload')
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', resolved, true)
+        for (const [k, v] of Object.entries(authHeaders)) {
+          try { xhr.setRequestHeader(k, v) } catch { /* ignore restricted headers */ }
+        }
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable) setUploadProgress(Math.round((evt.loaded / evt.total) * 100))
+        }
+        xhr.onerror = () => reject(new Error('Network error during upload'))
+        xhr.onload = () => {
+          try {
+            const data = JSON.parse(xhr.responseText)
+            if (xhr.status < 200 || xhr.status >= 300) {
+              reject(new Error(data?.error || `Upload failed (${xhr.status})`))
+            } else {
+              resolve(data as RegisterResponse)
+            }
+          } catch (e) { reject(e) }
+        }
+        xhr.send(formData)
+      })
+
       setUploadProgress(null)
 
       const hash = uploadResponse.hash
@@ -635,21 +727,89 @@ function App() {
       return
     }
     try {
-      const payload = await fetchDocumentDownload(hash, walletAddress)
-      const downloadedHash = ethers.keccak256(payload.bytes)
+      const ethereum = window.ethereum
+      if (!ethereum) throw new Error('Wallet provider unavailable')
+      const provider = new ethers.BrowserProvider(ethereum)
+      const signer = await provider.getSigner()
+
+      // A4/A6: EIP-191 signed headers for authenticated download
+      const authHeaders = await signAuthHeaders(signer, walletAddress)
+
+      // B6: Receive raw encrypted blob — server never decrypts
+      const payload = await fetchDocumentDownload(hash, walletAddress, authHeaders)
+      const encryptedBytes = payload.bytes
+
+      let plaintextBytes: Uint8Array
+      const directHash = ethers.keccak256(encryptedBytes)
+
+      if (directHash.toLowerCase() === hash.toLowerCase()) {
+        // Direct match: downloaded bytes already match the registered digest (e.g. legacy document)
+        plaintextBytes = encryptedBytes
+      } else {
+        // B6: Decrypt entirely in browser using wallet-derived key
+        pushToast('Decrypting…', 'Deriving your wallet key for decryption.', 'info')
+        // Try document-bound key derivation first; fallback to wallet-scoped key if legacy
+        const masterKey = await deriveWalletMasterKey(signer, walletAddress, hash)
+
+        const IV_LENGTH = 12
+        const TAG_LENGTH = 16
+
+        let plaintextBuffer: ArrayBuffer | null = null
+
+        // Attempt 1: Standard layout [12-byte IV][ciphertext][16-byte authTag] with document-bound key
+        if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
+          const iv = encryptedBytes.slice(0, IV_LENGTH)
+          const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
+          const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+          try {
+            plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, masterKey)
+          } catch {
+            // Attempt 2: Standard layout with legacy wallet-only master key
+            try {
+              const legacyKey = await deriveWalletMasterKey(signer, walletAddress)
+              plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, legacyKey)
+            } catch {
+              // pass to fallback layout
+            }
+          }
+        }
+
+        // Attempt 3: Legacy layout [ciphertext][16-byte authTag] with zero-IV
+        if (!plaintextBuffer && encryptedBytes.length >= TAG_LENGTH) {
+          const ciphertext = encryptedBytes.slice(0, encryptedBytes.length - TAG_LENGTH)
+          const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+          const zeroIv = new Uint8Array(12)
+          try {
+            plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, masterKey)
+          } catch {
+            try {
+              const legacyKey = await deriveWalletMasterKey(signer, walletAddress)
+              plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, legacyKey)
+            } catch {
+              // all attempts failed
+            }
+          }
+        }
+
+        if (!plaintextBuffer) {
+          throw new Error(
+            'Decryption failed. Ensure you are using the authorized wallet that owns or has been granted viewer access to this document.'
+          )
+        }
+        plaintextBytes = new Uint8Array(plaintextBuffer)
+      }
+
+      // B6: Compute keccak256 of decrypted plaintext — client-side integrity check
+      const downloadedHash = ethers.keccak256(plaintextBytes)
 
       let verifiedOnChain = false
       let registeredHash = hash
       try {
-        const ethereum = window.ethereum
         if (ethereum) {
-          const provider = new ethers.BrowserProvider(ethereum)
           const address = await ensureContractAddress()
           const contract = new ethers.Contract(address, DOCUMENT_REGISTRY_ABI, provider)
           verifiedOnChain = await contract.verifyDocument(downloadedHash)
-          if (verifiedOnChain) {
-            registeredHash = downloadedHash
-          }
+          if (verifiedOnChain) registeredHash = downloadedHash
         } else {
           verifiedOnChain = downloadedHash.toLowerCase() === hash.toLowerCase()
         }
@@ -661,25 +821,25 @@ function App() {
 
       setDownloadedDocInfo((prev) => ({
         ...prev,
-        [hash]: {
-          downloadedHash,
-          registeredHash,
-          verifiedOnChain,
-        },
+        [hash]: { downloadedHash, registeredHash, verifiedOnChain },
       }))
 
-      downloadBytes(payload.bytes, payload.filename || fallbackName, payload.mimetype)
+      // Serve the decrypted plaintext to the user
+      // Use the original filename/mimetype headers from the server (the pre-encryption values)
+      const saveFilename = payload.originalFilename || payload.filename?.replace(/\.enc$/, '') || fallbackName
+      const saveMimetype = payload.originalMimetype || payload.mimetype || 'application/octet-stream'
+      downloadBytes(plaintextBytes, saveFilename, saveMimetype)
 
       if (verifiedOnChain) {
         pushToast(
           '✓ Untampered Document Verified!',
-          `Client-side Keccak-256 hash (${shortHash(downloadedHash)}) matches the registered blockchain proof. Correct & untampered document downloaded.`,
+          `Client-side Keccak-256 hash (${shortHash(downloadedHash)}) matches the registered blockchain proof.`,
           'success'
         )
       } else {
         pushToast(
-          '⚠ Warning: Document Tampered!',
-          `Downloaded file hash (${shortHash(downloadedHash)}) does NOT match registered hash (${shortHash(hash)})!`,
+          '⚠ Warning: Hash Mismatch!',
+          `Downloaded hash (${shortHash(downloadedHash)}) does NOT match registered hash (${shortHash(hash)})!`,
           'error'
         )
       }
@@ -725,13 +885,18 @@ function App() {
       pushToast('Share pending', `${shortAddr(shareDialog.viewer)} will receive access after confirmation.`, 'info')
       await tx.wait()
       try {
-        await recordSharedDocument(shareDialog.viewer, {
-          hash: shareDialog.doc.hash,
-          name: shareDialog.doc.name,
-          owner: shareDialog.doc.owner,
-          createdAt: shareDialog.doc.createdAt,
-          cid: shareDialog.doc.cid,
-        })
+        const authHeaders = await signAuthHeaders(signer, walletAddress)
+        await recordSharedDocument(
+          shareDialog.viewer,
+          {
+            hash: shareDialog.doc.hash,
+            name: shareDialog.doc.name,
+            owner: shareDialog.doc.owner,
+            createdAt: shareDialog.doc.createdAt,
+            cid: shareDialog.doc.cid,
+          },
+          authHeaders,
+        )
       } catch (recordError) {
         // Non-fatal: on-chain sharing succeeded, local share index can be refreshed later.
         // eslint-disable-next-line no-console
@@ -768,11 +933,14 @@ function App() {
       pushToast('Revoke pending', `${shortAddr(shareDialog.viewer)} will lose access after confirmation.`, 'info')
       await tx.wait()
       try {
-        await fetch('/api/shared-record', {
+        // A3/A6: signed auth headers for DELETE
+        const authHeaders = await signAuthHeaders(signer, walletAddress)
+        const resolved = '/api/shared-record'
+        await fetch(resolved, {
           method: 'DELETE',
           headers: {
             'Content-Type': 'application/json',
-            'wallet-address': String(walletAddress),
+            ...authHeaders,
           },
           body: JSON.stringify({ hash: shareDialog.doc.hash, viewerAddress: shareDialog.viewer }),
         })
@@ -806,11 +974,11 @@ function App() {
       pushToast('Delete pending', shortHash(hash), 'info')
       await tx.wait()
       try {
+        // A3/A6: signed auth headers for DELETE
+        const authHeaders = await signAuthHeaders(signer, walletAddress)
         await fetch(`/api/documents/${hash}`, {
           method: 'DELETE',
-          headers: {
-            'wallet-address': String(walletAddress),
-          },
+          headers: { ...authHeaders },
         })
       } catch (deleteError) {
         // Non-fatal: chain delete succeeded; local cleanup may still happen later.

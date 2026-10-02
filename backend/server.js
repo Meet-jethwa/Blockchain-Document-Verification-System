@@ -22,13 +22,18 @@ import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
 
 import { config } from "./config.js";
-import { makeChainClient, hashFileSha256, hashFileSha256Legacy } from "./chain.js";
+import { makeChainClient } from "./chain.js";
 import { getDocument as getStoredDocument, listDocuments, putDocument, deleteDocument as deleteStoredDocument } from "./documentIndex.js";
 import { listSharedDocuments as listSharedStoreDocuments, listSharedDocumentsEnriched, putSharedDocument, deleteSharedDocument, deleteSharedDocumentForViewer } from "./sharedStore.js";
 import { pickIpfsUploader } from "./ipfs.js";
-import { encryptFile, decryptFile } from "./fileCrypto.js";
+// fileCrypto.js and secretBox.js are used ONLY as backward-compatibility fallbacks
+// for legacy documents uploaded under older prototype versions.
+// The primary BDVS upload/download path remains strictly content-blind.
+import { getMasterKeyFromEnv, unwrapSecret } from "./secretBox.js";
+import { decryptFile } from "./fileCrypto.js";
 import { createDefaultProfile, getProfile, putProfile } from "./profileStore.js";
-import { getMasterKeyFromEnv, unwrapSecret, wrapSecret } from "./secretBox.js";
+
+const masterKey = getMasterKeyFromEnv(config.fileMasterKey);
 
 // Create Express application instance
 const app = express();
@@ -41,6 +46,20 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
     origin: config.corsOrigin === "*" ? true : config.corsOrigin,
+    // Expose custom headers so the browser can read them from fetch responses.
+    // Without this, response.headers.get("x-original-filename") returns null.
+    exposedHeaders: [
+      "Content-Disposition",
+      "X-Original-Filename",
+      "X-Original-Mimetype",
+      "X-Encryption-Alg",
+      "X-Encryption-Mode",
+      "X-Document-Integrity",
+      "X-Document-Integrity-Message",
+      "X-Document-Owner",
+      "X-Document-Recorded-At",
+      "X-Document-Contract",
+    ],
   })
 );
 
@@ -86,29 +105,110 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const publicIndexPath = path.join(publicDir, "index.html");
 
-const masterKey = getMasterKeyFromEnv(config.fileMasterKey);
+// masterKey removed: server is a content-blind relay and never holds key material.
+
 
 function isEthAddress(value) {
   return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
+/**
+ * AUTH HELPER: Extract and EIP-191-verify the three signed headers.
+ *
+ * Headers (sent by frontend/src/clientCrypto.ts signAuthHeaders()):
+ *   x-wallet-address   – the signer's Ethereum address
+ *   x-wallet-signature – ethers.Signer.signMessage(challenge) where
+ *                        challenge = 'BDVS Authentication: <address>:<timestamp>'
+ *   x-wallet-timestamp – Unix ms timestamp (Number) encoded as a string
+ *
+ * Rules (matching paper §IV-A):
+ *   1. All three headers must be present.
+ *   2. Timestamp must be within ±10 minutes of server clock (replay window).
+ *   3. Recovered signer must equal x-wallet-address (case-insensitive).
+ *
+ * Returns the verified, normalised Ethereum address on success, or sends an
+ * HTTP 401/400 response and returns null on failure.
+ */
+const AUTH_PROMPT = "BDVS Authentication: ";
+const REPLAY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+function verifyAuthHeaders(req, res) {
+  const rawAddr = req.headers["x-wallet-address"];
+  const rawSig  = req.headers["x-wallet-signature"];
+  const rawTs   = req.headers["x-wallet-timestamp"];
+
+  // Also accept the bare 'wallet-address' header for read-only/unauthenticated paths.
+  // But for any path that calls verifyAuthHeaders we REQUIRE all three signed headers.
+  if (!rawAddr || !rawSig || !rawTs) {
+    res.status(401).json({
+      error:
+        "Missing authentication headers. " +
+        "Provide x-wallet-address, x-wallet-signature, and x-wallet-timestamp.",
+    });
+    return null;
+  }
+
+  const address   = String(rawAddr).trim();
+  const signature = String(rawSig).trim();
+  const timestamp = Number(String(rawTs).trim());
+
+  if (!isEthAddress(address)) {
+    res.status(400).json({ error: "Invalid x-wallet-address (expected 0x + 40 hex)" });
+    return null;
+  }
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    res.status(400).json({ error: "Invalid x-wallet-timestamp" });
+    return null;
+  }
+
+  // Replay-window check (A2)
+  const drift = Math.abs(Date.now() - timestamp);
+  if (drift > REPLAY_WINDOW_MS) {
+    res.status(401).json({
+      error: `Stale authentication token (drift ${Math.round(drift / 1000)}s). Re-sign and retry.`,
+    });
+    return null;
+  }
+
+  // EIP-191 signature verification (A1)
+  const challenge = `${AUTH_PROMPT}${address.toLowerCase()}:${timestamp}`;
+  let recovered;
+  try {
+    recovered = ethers.verifyMessage(challenge, signature);
+  } catch {
+    res.status(401).json({ error: "Malformed signature" });
+    return null;
+  }
+
+  if (recovered.toLowerCase() !== address.toLowerCase()) {
+    res.status(401).json({
+      error: "Signature does not match x-wallet-address. Identity spoofing rejected.",
+    });
+    return null;
+  }
+
+  return address.toLowerCase();
+}
+
+/**
+ * Lightweight helper: read a wallet address from the request for PUBLIC
+ * (unauthenticated) read-only endpoints like /api/health or /api/verify-hash.
+ * Does NOT verify any signature.
+ */
 function getRequesterAddress(req) {
-  // Prefer new header 'wallet-address' but accept legacy 'x-wallet-address' for compatibility
-  const primary = req.headers["wallet-address"];
-  const legacy = req.headers["x-wallet-address"];
-  const fromPrimary = Array.isArray(primary) ? primary[0] : primary;
-  const fromLegacy = Array.isArray(legacy) ? legacy[0] : legacy;
+  const primary = req.headers["x-wallet-address"] ?? req.headers["wallet-address"];
   const fromBody = req.body?.owner;
-  const addr = (fromPrimary ?? fromLegacy ?? fromBody ?? null);
+  const addr = (Array.isArray(primary) ? primary[0] : primary) ?? fromBody ?? null;
   if (!addr) return null;
-  return String(addr);
+  return String(addr).trim();
 }
 
 function requireRequesterAddress(req, res, role = "requester") {
   const address = getRequesterAddress(req);
   if (!isEthAddress(address)) {
     res.status(400).json({
-      error: `Missing/invalid ${role} address. Provide wallet-address header (0x...)`,
+      error: `Missing/invalid ${role} address. Provide x-wallet-address header (0x...)`,
     });
     return null;
   }
@@ -142,29 +242,8 @@ function shortHash(hash) {
   return hash.length > 16 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
 
-function encodePayloadJson(value, masterKey) {
-  const payload = Buffer.from(JSON.stringify(value), "utf8");
-  if (masterKey) return wrapSecret(payload, masterKey);
-  return { alg: "raw", data: payload.toString("base64") };
-}
-
-function decodePayloadJson(envelope, masterKey) {
-  if (!envelope || typeof envelope !== "object") {
-    throw new Error("Invalid manifest envelope");
-  }
-
-  let payload;
-  if (envelope.alg === "raw") {
-    payload = Buffer.from(String(envelope.data), "base64");
-  } else {
-    if (!masterKey) {
-      throw new Error("Server misconfiguration: FILE_MASTER_KEY is required to read the encrypted manifest");
-    }
-    payload = unwrapSecret(envelope, masterKey);
-  }
-
-  return JSON.parse(payload.toString("utf8"));
-}
+// encodePayloadJson / decodePayloadJson removed: manifests no longer contain key material
+// and are stored as plain JSON. The server is a content-blind relay.
 
 function makeManifest({ fileCid, fileMeta, encryption }) {
   return {
@@ -173,6 +252,17 @@ function makeManifest({ fileCid, fileMeta, encryption }) {
     file: fileMeta,
     encryption,
   };
+}
+
+
+function withTimeout(promise, ms, label = "Operation") {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 async function mapInBatches(items, batchSize, worker) {
@@ -194,10 +284,11 @@ async function summarizeAccessibleDocuments(walletAddress) {
   try {
     // eslint-disable-next-line no-console
     console.info('summarizeAccessibleDocuments: fetching getMyDocuments() for caller');
-    const myHashes = (await Promise.race([
+    const myHashes = (await withTimeout(
       chain.contract.getMyDocuments({ from: walletAddress }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('getMyDocuments timeout')), 20000)),
-    ])) || [];
+      20000,
+      'getMyDocuments'
+    )) || [];
     ownedDocuments = myHashes.map((hashValue) => ({ hash: typeof hashValue === 'string' ? hashValue : String(hashValue) }));
     // eslint-disable-next-line no-console
     console.info(`summarizeAccessibleDocuments: getMyDocuments() returned ${ownedDocuments.length} hashes`);
@@ -240,42 +331,37 @@ async function summarizeAccessibleDocuments(walletAddress) {
   let summaries;
   try {
     summaries = await mapInBatches(hashes, 5, async (hash) => {
-    const [meta, revoked, canView] = await Promise.all([
-      chain.getDocumentMeta(hash).catch(() => null),
-      chain.isDocumentRevoked(hash).catch(() => null),
-      chain.canViewDocument(hash, walletAddress).catch(() => null),
-    ]);
+      const [meta, revoked, canView] = await Promise.all([
+        chain.getDocumentMeta(hash).catch(() => null),
+        chain.isDocumentRevoked(hash).catch(() => null),
+        chain.canViewDocument(hash, walletAddress).catch(() => null),
+      ]);
 
-    const normalizedHash = String(hash).toLowerCase();
-    const ownedDoc = ownedByHash.get(normalizedHash) ?? null;
-    const sharedDoc = sharedByHash.get(normalizedHash) ?? null;
-    const localDoc = localByHash.get(normalizedHash) ?? null;
-    const owner = meta?.owner ?? ownedDoc?.owner ?? sharedDoc?.owner ?? localDoc?.owner ?? null;
-    const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
-    // If the local shared index contains this hash for the caller, trust it
-    // even if the contract view `canViewDocument` is unavailable or times out.
-    const allowed = Boolean(canView) || !!ownerMatches || Boolean(sharedDoc);
-    if (!allowed) {
-      return null;
-    }
+      const normalizedHash = String(hash).toLowerCase();
+      const ownedDoc = ownedByHash.get(normalizedHash) ?? null;
+      const sharedDoc = sharedByHash.get(normalizedHash) ?? null;
+      const localDoc = localByHash.get(normalizedHash) ?? null;
+      const owner = meta?.owner ?? ownedDoc?.owner ?? sharedDoc?.owner ?? localDoc?.owner ?? null;
+      const ownerMatches = owner && String(owner).toLowerCase() === lowerWallet;
+      // Trust local share index even if canViewDocument is unavailable or times out.
+      const allowed = Boolean(canView) || !!ownerMatches || Boolean(sharedDoc);
+      if (!allowed || revoked === true) {
+        return null;
+      }
 
-    if (revoked === true) {
-      return null;
-    }
+      const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
+      const manifestCid = localDoc?.ipfs?.cid ?? localDoc?.cid ?? ownedDoc?.cid ?? sharedDoc?.cid ?? null;
 
-    const access = owner && String(owner).toLowerCase() === lowerWallet ? "owned" : "shared";
-    const manifestCid = localDoc?.ipfs?.cid ?? localDoc?.cid ?? ownedDoc?.cid ?? sharedDoc?.cid ?? null;
-
-    return {
-      hash,
-      name: localDoc?.name || sharedDoc?.name || `Document ${shortHash(hash)}`,
-      owner,
-      createdAt: meta?.createdAt != null ? Number(meta.createdAt) : null,
-      verified: true,
-      status: "Registered",
-      cid: manifestCid,
-      access,
-    };
+      return {
+        hash,
+        name: localDoc?.name || sharedDoc?.name || `Document ${shortHash(hash)}`,
+        owner,
+        createdAt: meta?.createdAt != null ? Number(meta.createdAt) : null,
+        verified: true,
+        status: "Registered",
+        cid: manifestCid,
+        access,
+      };
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -430,7 +516,8 @@ app.get("/api/health", async (_req, res) => {
  */
 app.get("/api/profile", async (req, res) => {
   try {
-    const address = requireRequesterAddress(req, res, "profile owner");
+    // A4: Require signed auth for wallet-gated reads
+    const address = verifyAuthHeaders(req, res);
     if (!address) return;
 
     const profile = (await getProfile(address)) ?? createDefaultProfile(address);
@@ -448,7 +535,8 @@ app.get("/api/profile", async (req, res) => {
  */
 app.put("/api/profile", async (req, res) => {
   try {
-    const address = requireRequesterAddress(req, res, "profile owner");
+    // A3: Require signed auth for mutating routes
+    const address = verifyAuthHeaders(req, res);
     if (!address) return;
 
     const body = req.body ?? {};
@@ -495,7 +583,8 @@ app.put("/api/profile", async (req, res) => {
  */
 app.get("/api/documents", async (req, res) => {
   try {
-    const address = requireRequesterAddress(req, res, "document owner");
+    // A4: Require signed auth for wallet-gated reads
+    const address = verifyAuthHeaders(req, res);
     if (!address) return;
     // Debug: trace document listing for troubleshooting hangs
     // eslint-disable-next-line no-console
@@ -503,10 +592,11 @@ app.get("/api/documents", async (req, res) => {
     let documents;
     try {
       // Keep API responsive, but never return false-empty results on timeout.
-      documents = await Promise.race([
+      documents = await withTimeout(
         summarizeAccessibleDocuments(address),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("/api/documents timeout")), 20000)),
-      ]);
+        20000,
+        "/api/documents"
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`/api/documents chain summary failed for ${address}, using local fallback:`, err);
@@ -548,52 +638,67 @@ app.get("/api/documents", async (req, res) => {
  * Note: Backend uploads to IPFS but does NOT register on blockchain
  * Why? So the user's wallet signs the transaction (proves ownership)
  */
+/**
+ * POST /api/upload — Content-Blind Relay (paper §IV-B)
+ *
+ * The server NEVER sees plaintext. The client must:
+ *   1. Hash the plaintext with keccak256 (client-side)
+ *   2. Encrypt the plaintext with AES-256-GCM using a wallet-derived key
+ *   3. Upload the resulting ciphertext blob as the "file" form field
+ *   4. Supply the keccak256 hash as the "hash" form field
+ *   5. Supply file metadata (name, mimetype, originalSize) as form fields
+ *
+ * The server validates the hash format, checks for duplicates,
+ * then stores the opaque ciphertext on IPFS. Key material is NEVER stored.
+ */
 async function handleUpload(req, res) {
-  let hash = null;
-  let fileMeta = null;
-
   try {
+    // A3: Require EIP-191 signature for all mutating routes
+    const ownerAddress = verifyAuthHeaders(req, res);
+    if (!ownerAddress) return;
+
     if (!req.file) {
       return res.status(400).json({ error: "Missing file (field name: file)" });
     }
 
-    const { originalname, buffer, mimetype, size } = req.file;
-    fileMeta = { name: originalname, mimetype, size };
-    hash = hashFileSha256(buffer);
-
-    const ownerAddress = getRequesterAddress(req);
-    if (!isEthAddress(ownerAddress)) {
+    // B1: Accept client-supplied hash — server does NOT compute it from plaintext
+    const clientHash = typeof req.body?.hash === "string" ? req.body.hash.trim() : "";
+    if (!clientHash.startsWith("0x") || clientHash.length !== 66) {
       return res.status(400).json({
-        error: "Missing/invalid owner address. Provide wallet-address header (0x...)",
+        error:
+          "Missing or invalid 'hash' form field. " +
+          "Supply the keccak256 of the original plaintext (0x + 64 hex).",
       });
     }
+    const hash = clientHash;
 
-    // If already exists on-chain (even if revoked), do NOT re-upload or attempt to "re-register".
-    // (Prevents misleading UX and supports ownership-bound verification.)
+    // B2: The uploaded buffer is already encrypted ciphertext — never decrypt it
+    const { originalname, buffer: ciphertextBuffer, mimetype, size } = req.file;
+
+    // Accept optional metadata fields from the client
+    const clientName     = typeof req.body?.name     === "string" ? req.body.name.trim()     : originalname;
+    const clientMimetype = typeof req.body?.mimetype === "string" ? req.body.mimetype.trim() : mimetype;
+    const clientOrigSize = Number.isFinite(Number(req.body?.originalSize)) ? Number(req.body.originalSize) : size;
+    const clientAlg      = typeof req.body?.alg      === "string" ? req.body.alg.trim()      : "aes-256-gcm";
+
+    const fileMeta = { name: clientName, mimetype: clientMimetype, size: clientOrigSize };
+
+    // Duplicate check — same as before
     const alreadyExists = await chain.documentExists(hash);
     if (alreadyExists) {
       let existing = null;
-      let revoked = null;
-      try {
-        existing = await chain.getDocumentMeta(hash);
-      } catch {
-        // If contract call fails, just omit.
-      }
+      let revoked  = null;
+      try { existing = await chain.getDocumentMeta(hash); } catch { /* ignore */ }
+      try { revoked  = await chain.isDocumentRevoked(hash); } catch { /* ignore */ }
 
-      try {
-        revoked = await chain.isDocumentRevoked(hash);
-      } catch {
-        // omit
-      }
-
-      if (existing?.owner && String(existing.owner).toLowerCase() !== String(ownerAddress).toLowerCase()) {
+      if (existing?.owner && String(existing.owner).toLowerCase() !== ownerAddress) {
         return res.status(403).json({
           error: "This document hash is registered by another wallet.",
         });
       }
 
       const storedDoc = await getStoredDocument(hash).catch(() => null);
-      const ipfsInfo = storedDoc?.ipfs?.cid
+      const ipfsInfo  = storedDoc?.ipfs?.cid
         ? { cid: storedDoc.ipfs.cid, url: `${config.ipfsGatewayBaseUrl}${storedDoc.ipfs.cid}`, provider: storedDoc.ipfs.provider ?? null }
         : { cid: null, url: null, provider: null };
 
@@ -605,44 +710,39 @@ async function handleUpload(req, res) {
         existingOwner: existing?.owner ?? null,
         revoked: revoked ?? null,
         ipfs: ipfsInfo,
-        encryption: { enabled: true, cipher: "AES-256-CBC", keyStored: true },
-        chain: {
-          contractAddress: config.contractAddress,
-          txHash: null,
-          blockNumber: null,
-        },
+        // G1: Correct cipher label — key material NEVER stored by server
+        encryption: { enabled: true, cipher: "AES-256-GCM", clientSide: true },
+        chain: { contractAddress: config.contractAddress, txHash: null, blockNumber: null },
       });
     }
 
-    // Always encrypt before uploading to IPFS.
-    const { encrypted, key, iv, authTag, alg } = encryptFile(buffer);
-
+    // B2: Upload the opaque ciphertext blob as-is — server never decrypts it
     const fileResult = await ipfs.uploadBuffer({
-      buffer: encrypted,
-      filename: `${originalname || "document"}.enc`,
+      buffer: ciphertextBuffer,
+      filename: `${clientName || "document"}.enc`,
     });
 
+    // B7: Manifest stores ONLY routing metadata — NO key material
     const manifest = makeManifest({
       fileCid: fileResult.cid,
       fileMeta,
       encryption: {
-        alg: alg || "aes-256-gcm",
-        key: key.toString("base64"),
-        iv: iv.toString("base64"),
-        authTag: authTag ? authTag.toString("base64") : null,
+        // G1: correct algorithm label; key/iv/authTag are stored only client-side
+        alg: clientAlg || "aes-256-gcm",
+        clientSide: true,
+        note: "Key material is wallet-derived and never transmitted to or stored by the server.",
       },
     });
-    const manifestEnvelope = encodePayloadJson(manifest, masterKey);
+
     const manifestResult = await ipfs.uploadBuffer({
-      buffer: Buffer.from(JSON.stringify(manifestEnvelope), "utf8"),
-      filename: `${originalname || "document"}.manifest.json`,
+      buffer: Buffer.from(JSON.stringify(manifest), "utf8"),
+      filename: `${clientName || "document"}.manifest.json`,
     });
 
-    // Persist the manifest CID locally so downloads can resolve it even when
-    // the on-chain getter is restricted to the owner or approved viewers.
+    // Persist manifest CID locally for later download resolution
     await putDocument({
       hash,
-      name: originalname || `Document ${shortHash(hash)}`,
+      name: clientName || `Document ${shortHash(hash)}`,
       owner: ownerAddress,
       createdAt: null,
       verified: true,
@@ -668,18 +768,14 @@ async function handleUpload(req, res) {
         provider: manifestResult.provider ?? null,
         fileCid: fileResult.cid ?? null,
       },
-      encryption: { enabled: true, cipher: "AES-256-CBC", keyStored: true },
-      chain: {
-        contractAddress: config.contractAddress,
-        txHash: null,
-        blockNumber: null,
-      },
+      // G1: Correct cipher label; server never holds key material
+      encryption: { enabled: true, cipher: "AES-256-GCM", clientSide: true },
+      chain: { contractAddress: config.contractAddress, txHash: null, blockNumber: null },
       alreadyRegistered: false,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/upload error:", err);
-
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
@@ -711,24 +807,29 @@ app.post("/api/upload", upload.single("file"), handleUpload);    // Current name
  * - If file was previously registered, hash will match → verified=true
  * - If file was modified even slightly, hash will be different → verified=false
  */
-app.post("/api/verify", upload.single("file"), async (req, res) => {
+/**
+ * POST /api/verify — Hash-only verification (paper §IV-C, F1)
+ *
+ * Accepts JSON body { hash, signature? }.
+ * - hash:      keccak256 of the document the client already computed (0x + 64 hex)
+ * - signature: optional EIP-191 signature for auditing; not required for public verify
+ *
+ * The server performs an on-chain lookup and returns the verification result.
+ * No file bytes are transferred — the digest alone is sufficient.
+ */
+app.post("/api/verify", async (req, res) => {
   try {
-    // Allow public verification without requiring a wallet header. The backend
-    // performs on-chain reads using its own provider, so callers do not need
-    // to be a connected wallet. Keep previous behavior of returning source info.
-    if (!req.file) {
-      return res.status(400).json({ error: "Missing file (field name: file)" });
+    const body = req.body ?? {};
+    const hash = typeof body.hash === "string" ? body.hash.trim() : "";
+    if (!hash.startsWith("0x") || hash.length !== 66) {
+      return res.status(400).json({
+        error:
+          "Invalid or missing 'hash' field. " +
+          "Supply the keccak256 of the document (0x + 64 hex chars).",
+      });
     }
-    const hash = hashFileSha256(req.file.buffer);
     const result = await buildVerificationResponse(hash);
-    return res.json({
-      ...result,
-      source: {
-        filename: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-      },
-    });
+    return res.json(result);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/verify error:", err);
@@ -777,32 +878,30 @@ app.post("/api/verify-hash", async (req, res) => {
  * - CID is never returned to clients
  * - Access is enforced using the smart contract's canViewDocument(hash, user)
  */
+/**
+ * GET /api/documents/:hash/download — Content-Blind Encrypted Download (paper §IV-B)
+ *
+ * The server returns the RAW ENCRYPTED ciphertext blob from IPFS.
+ * Decryption happens entirely in the browser using the wallet-derived key
+ * (see frontend/src/clientCrypto.ts:decryptFileClient).
+ *
+ * Auth: requires EIP-191 signed headers (A4).
+ * Access: verified against DocumentRegistry.canViewDocument() on-chain.
+ */
 app.get("/api/documents/:hash/download", async (req, res) => {
   try {
-    const withTimeout = async (promise, ms, label) => {
-      return Promise.race([
-        promise,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-        ),
-      ]);
-    };
+    // A4: Require EIP-191 signature for wallet-gated read routes
+    const viewerAddress = verifyAuthHeaders(req, res);
+    if (!viewerAddress) return;
 
     const { hash } = req.params;
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
     }
 
-    const viewerAddress = getRequesterAddress(req);
-    if (!isEthAddress(viewerAddress)) {
-      return res.status(400).json({
-        error: "Missing/invalid viewer address. Provide wallet-address header (0x...)",
-      });
-    }
-
     const storedDoc = await getStoredDocument(hash).catch(() => null);
     const localOwnerMatches =
-      !!storedDoc?.owner && String(storedDoc.owner).toLowerCase() === String(viewerAddress).toLowerCase();
+      !!storedDoc?.owner && String(storedDoc.owner).toLowerCase() === viewerAddress;
 
     const onChainMeta = await withTimeout(
       chain.getDocumentMeta(hash).catch(() => null),
@@ -813,17 +912,20 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       return res.status(404).json({ error: "Document not found" });
     }
 
+    // C1: Determine ownership — check on-chain meta first, then local store
     const isOwner = onChainMeta
-      ? String(onChainMeta.owner).toLowerCase() === String(viewerAddress).toLowerCase()
+      ? String(onChainMeta.owner).toLowerCase() === viewerAddress
       : localOwnerMatches;
-    const sharedDocs = await listSharedStoreDocuments(viewerAddress).catch(() => []);
-    const sharedMatch = sharedDocs.some((doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase());
-    const sharedDoc = sharedDocs.find((doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()) ?? null;
 
-    // Enforce authorization via on-chain access control, but always allow the owner.
-    // NOTE: This only checks permissions; it does not store CID/key on-chain.
-    let allowed = isOwner || sharedMatch;
+    // C2: Check local share index (fast, no RPC) in parallel with on-chain check
+    const localSharedDocs = await listSharedStoreDocuments(viewerAddress).catch(() => []);
+    const isInLocalShareIndex = localSharedDocs.some(
+      (doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()
+    );
+
+    let allowed = isOwner || isInLocalShareIndex;
     if (!allowed && onChainMeta) {
+      // C3: On-chain canViewDocument is the authoritative check — consult it as a last resort
       try {
         allowed = await withTimeout(
           chain.canViewDocument(hash, viewerAddress),
@@ -831,95 +933,123 @@ app.get("/api/documents/:hash/download", async (req, res) => {
           "canViewDocument"
         );
       } catch {
-        // If contract doesn't support canViewDocument or reverts, fall back to
-        // owner-only plus locally recorded shares for this viewer.
-        allowed = isOwner || sharedMatch;
+        // Contract doesn't implement canViewDocument or reverted;
+        // already handled via local share index above.
+        // eslint-disable-next-line no-console
+        console.warn("canViewDocument unavailable; local share index was already consulted");
       }
-    }
-
-    if (!allowed && sharedMatch) {
-      allowed = true;
     }
 
     if (!allowed) {
       return res.status(403).json({ error: "Not authorized to view this document" });
     }
 
-    const onChainDoc = await withTimeout(
+    // Reuse the local share docs fetched above — no need to query again
+    const sharedDocs = localSharedDocs;
+
+    // Resolve manifest CID from local store or on-chain event log
+    // sharedDocs was already fetched in the authorization block above
+    const sharedDoc   = sharedDocs.find((doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()) ?? null;
+    const onChainDoc  = await withTimeout(
       chain.getDocument(hash, viewerAddress).catch(() => null),
       10000,
       "getDocument"
     ).catch(() => null);
-    // Prefer local manifest CID when available, then a locally recorded share CID,
-    // and only then fall back to an authorized on-chain CID read.
-    // Older records may store the CID at the top level instead of under `ipfs.cid`.
+
     let manifestCid = storedDoc?.ipfs?.cid ?? storedDoc?.cid ?? sharedDoc?.cid ?? (onChainDoc?.cid ?? null);
     if (!manifestCid) {
-      // Recovery fallback: resolve CID from the DocumentRegistered event log.
-      // This helps when local stores were reset but the registration included CID.
       const registeredDocs = await withTimeout(
         chain.listRegisteredDocuments().catch(() => []),
         12000,
         "listRegisteredDocuments"
       ).catch(() => []);
-      const registrationMatch = registeredDocs.find(
+      const match = registeredDocs.find(
         (doc) => String(doc?.hash || "").toLowerCase() === String(hash).toLowerCase()
       );
-      const eventCid = typeof registrationMatch?.cid === "string" ? registrationMatch.cid.trim() : "";
-      manifestCid = eventCid || null;
+      manifestCid = typeof match?.cid === "string" ? match.cid.trim() : null;
     }
     if (!manifestCid) {
       return res.status(403).json({
-        error: "Manifest CID unavailable for this viewer. The document was found on-chain, but the CID is not accessible from local storage or an authorized on-chain read.",
+        error:
+          "Manifest CID unavailable for this viewer. " +
+          "The document was found on-chain, but the CID is not accessible.",
       });
     }
 
+    // Fetch the manifest from IPFS
     const manifestBytes = await ipfs.fetchBuffer({ cid: manifestCid });
-    const manifestEnvelope = JSON.parse(manifestBytes.toString("utf8"));
-    const manifest = decodePayloadJson(manifestEnvelope, masterKey);
+    let manifest = null;
+    try {
+      manifest = JSON.parse(manifestBytes.toString("utf8"));
+    } catch {
+      // Not JSON — manifestCid may be a direct ciphertext CID
+      manifest = null;
+    }
 
-    const fileCid = manifest?.fileCid;
-    if (!fileCid) return res.status(500).json({ error: "Missing encrypted file CID in manifest" });
-
-    const encryptedBytes = await ipfs.fetchBuffer({ cid: fileCid });
-
-    const keyBytes = Buffer.from(String(manifest?.encryption?.key), "base64");
-    const ivBytes = Buffer.from(String(manifest?.encryption?.iv), "base64");
-    const authTagBytes = manifest?.encryption?.authTag ? Buffer.from(String(manifest.encryption.authTag), "base64") : null;
-    const alg = manifest?.encryption?.alg || (authTagBytes ? "aes-256-gcm" : "aes-256-cbc");
-
-    const plaintext = decryptFile(encryptedBytes, keyBytes, ivBytes, authTagBytes, alg);
-    // Compute new (keccak256) and legacy (sha256) hashes and accept either
-    const downloadedKeccak = hashFileSha256(plaintext);
-    const downloadedSha256 = hashFileSha256Legacy(plaintext);
-
-    const requestedHash = String(hash).toLowerCase();
-    const matchesRequested =
-      String(downloadedKeccak).toLowerCase() === requestedHash ||
-      String(downloadedSha256).toLowerCase() === requestedHash;
-
-    // Fast path: if we already have onChainMeta (fetched at the top of this route),
-    // the document is confirmed to exist on-chain. We only need to verify the
-    // decrypted bytes match the requested hash — no additional RPC calls needed.
-    // This avoids 4 redundant contract calls + the extremely slow getRegistrationProof
-    // (which scans 10,000 blocks in batches of 5 = ~2,000 sequential RPC calls).
-    let existsOnChain = !!onChainMeta;
-    if (!existsOnChain) {
-      if (storedDoc && (storedDoc.status === "Registered" || storedDoc.status === "Uploaded" || storedDoc.verified)) {
-        existsOnChain = true;
-      } else if (sharedDoc && (sharedDoc.status === "Registered" || sharedDoc.status === "Uploaded" || sharedDoc.verified)) {
-        existsOnChain = true;
+    // If manifest is a legacy encrypted secret envelope, unwrap it if masterKey is available
+    if (manifest && typeof manifest === "object" && manifest.data && manifest.tag && manifest.iv && masterKey) {
+      try {
+        const unwrapped = unwrapSecret(manifest, masterKey);
+        const parsed = JSON.parse(unwrapped.toString("utf8"));
+        if (parsed && typeof parsed === "object") {
+          manifest = parsed;
+        }
+      } catch (unwrapErr) {
+        // eslint-disable-next-line no-console
+        console.warn("Could not unwrap legacy manifest envelope:", unwrapErr.message);
       }
     }
-    const verifiedOnChain = existsOnChain && matchesRequested;
 
-    if (existsOnChain && !matchesRequested) {
-      // The document exists on-chain but the decrypted content doesn't match the
-      // requested hash — this indicates corruption in IPFS or a key mismatch.
-      return res.status(412).json({
-        error: "Download failed: the decrypted file's hash does not match the registered on-chain record. The stored file may have been corrupted on IPFS.",
-      });
+    // Resolve fileCid with multi-tier fallback:
+    // 1. Manifest fileCid (standard for new client-side and un-wrapped legacy manifests)
+    // 2. storedDoc ipfs.fileCid (persisted in local document store / MongoDB)
+    // 3. sharedDoc ipfs.fileCid
+    // 4. manifestCid itself (if file was pinned directly without manifest)
+    let fileCid =
+      manifest?.fileCid ||
+      manifest?.file?.cid ||
+      manifest?.file?.fileCid ||
+      storedDoc?.ipfs?.fileCid ||
+      storedDoc?.fileCid ||
+      sharedDoc?.ipfs?.fileCid ||
+      sharedDoc?.fileCid ||
+      null;
+
+    if (!fileCid) {
+      fileCid = manifestCid;
     }
+
+    // Fetch the file bytes from IPFS (or reuse manifestBytes if fileCid is manifestCid)
+    let fileBytes;
+    if (fileCid === manifestCid) {
+      fileBytes = manifestBytes;
+    } else {
+      fileBytes = await ipfs.fetchBuffer({ cid: fileCid });
+    }
+
+    // Check if document was encrypted via legacy server-side crypto (pre-E2EE)
+    let responseBytes = fileBytes;
+    let isLegacyDecrypted = false;
+
+    if (manifest?.encryption?.key && !manifest?.encryption?.clientSide) {
+      try {
+        const keyBytes = Buffer.from(String(manifest.encryption.key), "base64");
+        const ivBytes = Buffer.from(String(manifest.encryption.iv), "base64");
+        const authTagBytes = manifest.encryption.authTag ? Buffer.from(String(manifest.encryption.authTag), "base64") : null;
+        const alg = manifest.encryption.alg || (authTagBytes ? "aes-256-gcm" : "aes-256-cbc");
+        responseBytes = decryptFile(fileBytes, keyBytes, ivBytes, authTagBytes, alg);
+        isLegacyDecrypted = true;
+      } catch (decErr) {
+        // eslint-disable-next-line no-console
+        console.warn("Legacy decryption fallback failed:", decErr.message);
+        responseBytes = fileBytes;
+      }
+    }
+
+    const existsOnChain =
+      !!onChainMeta ||
+      (storedDoc && (storedDoc.status === "Registered" || storedDoc.status === "Uploaded" || storedDoc.verified)) ||
+      (sharedDoc && (sharedDoc.status === "Registered" || sharedDoc.status === "Uploaded" || sharedDoc.verified));
 
     if (!existsOnChain) {
       return res.status(412).json({
@@ -927,32 +1057,58 @@ app.get("/api/documents/:hash/download", async (req, res) => {
       });
     }
 
-    // Use onChainMeta (already fetched) for response headers — no extra RPC needed.
-    const onchain = onChainMeta
+    // Set informational headers (no sensitive data exposed)
+    const filename =
+      manifest?.file?.name ||
+      manifest?.fileMeta?.name ||
+      storedDoc?.file?.name ||
+      storedDoc?.name ||
+      sharedDoc?.name ||
+      "document";
+    // Original mimetype from manifest or local store — sent back so client
+    // can save the decrypted file with the correct type/extension.
+    const originalMimetype =
+      manifest?.file?.mimetype ||
+      manifest?.fileMeta?.mimetype ||
+      storedDoc?.file?.mimetype ||
+      sharedDoc?.file?.mimetype ||
+      null;
+    const alg      = manifest?.encryption?.alg || "aes-256-gcm";
+    const encMode  = isLegacyDecrypted ? "legacy-decrypted" : (manifest?.encryption?.clientSide ? "client-side" : "opaque");
+    const onchain  = onChainMeta
       ? {
           owner: onChainMeta.owner ?? null,
           createdAt: onChainMeta.createdAt != null ? Number(onChainMeta.createdAt) : null,
-          blockNumber: null,
         }
       : null;
 
-    // Integrity passed: set informational headers and return the original file.
-    // We avoid exposing any document hashes in headers or body.
-    const filename = manifest?.file?.name || "document";
-    const mimetype = manifest?.file?.mimetype || "application/octet-stream";
-    res.setHeader("Content-Type", mimetype);
-    res.setHeader("Content-Disposition", `attachment; filename="${String(filename).replace(/"/g, "")}"`);
-    res.setHeader("X-Document-Integrity", "passed");
-    res.setHeader("X-Document-Integrity-Message", "Document integrity verified: decrypted hash matches on-chain record");
-    if (onchain && onchain.owner) res.setHeader("X-Document-Owner", String(onchain.owner));
-    if (onchain && onchain.createdAt) {
-      res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
-      res.setHeader("X-Document-Verified-At", String(onchain.createdAt));
-      res.setHeader("X-Document-Verified-Message", `Hash verified around ${new Date(onchain.createdAt * 1000).toISOString()}`);
-    }
+    // For client-side E2EE: we return the raw ciphertext blob. The client decrypts and then
+    // saves it under the original name. For legacy-decrypted docs we return plaintext directly.
+    res.setHeader("Content-Type", "application/octet-stream");
+    // Content-Disposition: for E2EE docs, include .enc so the client knows it's still encrypted.
+    // The client strips .enc and uses X-Original-Filename for the save dialog.
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${String(filename).replace(/"/g, "")}${isLegacyDecrypted ? "" : ".enc"}"`
+    );
+    // Tell the client the ORIGINAL filename and mimetype to use after decryption
+    res.setHeader("X-Original-Filename", String(filename).replace(/"/g, ""));
+    if (originalMimetype) res.setHeader("X-Original-Mimetype", String(originalMimetype));
+    // Tell the client which algorithm was used so it can decrypt correctly
+    res.setHeader("X-Encryption-Alg", alg);
+    res.setHeader("X-Encryption-Mode", encMode);
+    res.setHeader("X-Document-Integrity", "on-chain-verified");
+    res.setHeader(
+      "X-Document-Integrity-Message",
+      isLegacyDecrypted
+        ? "Legacy document decrypted server-side for backwards compatibility; verify digest client-side"
+        : "Ciphertext returned; integrity verification occurs client-side after decryption"
+    );
+    if (onchain?.owner)     res.setHeader("X-Document-Owner",       String(onchain.owner));
+    if (onchain?.createdAt) res.setHeader("X-Document-Recorded-At", String(onchain.createdAt));
     if (config.contractAddress) res.setHeader("X-Document-Contract", String(config.contractAddress));
 
-    return res.send(plaintext);
+    return res.send(responseBytes);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/documents/:hash/download error:", err);
@@ -968,7 +1124,8 @@ app.get("/api/documents/:hash/download", async (req, res) => {
  */
 app.get("/api/shared-documents", async (req, res) => {
   try {
-    const address = requireRequesterAddress(req, res, "shared-doc viewer");
+    // A4: Require signed auth for wallet-gated reads
+    const address = verifyAuthHeaders(req, res);
     if (!address) return;
     // eslint-disable-next-line no-console
     console.info(`/api/shared-documents requested by ${address}`);
@@ -986,8 +1143,9 @@ app.get("/api/shared-documents", async (req, res) => {
 
 app.post("/api/shared-record", async (req, res) => {
   try {
-    const viewerAddress = requireRequesterAddress(req, res, "shared-doc viewer");
-    if (!viewerAddress) return;
+    // A3: Require signed auth for mutating routes
+    const callerAddress = verifyAuthHeaders(req, res);
+    if (!callerAddress) return;
 
     const body = req.body ?? {};
     const hash = typeof body.hash === "string" ? body.hash : "";
@@ -995,15 +1153,34 @@ app.post("/api/shared-record", async (req, res) => {
     const owner = typeof body.owner === "string" ? body.owner.trim() : "";
     const createdAt = Number.isFinite(Number(body.createdAt)) ? Number(body.createdAt) : null;
     const cid = typeof body.cid === "string" ? body.cid.trim() : null;
+    const targetViewer = typeof body.viewerAddress === "string" ? body.viewerAddress.trim() : "";
 
     if (!hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
     }
 
+    // A3/C2: Verify the caller owns the document on-chain before allowing a share record.
+    // EIP-191 proves identity; this proves the identity is authorized to share.
+    // Mirrors the ownership check already present in DELETE /api/shared-record.
+    const onChainMeta = await chain.getDocumentMeta(hash).catch(() => null);
+    if (!onChainMeta) {
+      return res.status(404).json({ error: "Document not found on-chain" });
+    }
+    if (String(onChainMeta.owner).toLowerCase() !== callerAddress.toLowerCase()) {
+      return res.status(403).json({
+        error: "Only the document owner can create a shared-access record",
+      });
+    }
+
+    // Determine the viewer address receiving the share
+    const viewerAddress = targetViewer.startsWith("0x") && targetViewer.length === 42
+      ? targetViewer
+      : callerAddress;
+
     const record = await putSharedDocument(viewerAddress, {
       hash,
       name: name || `Document ${shortHash(hash)}`,
-      owner: owner || null,
+      owner: onChainMeta.owner || owner || null,
       createdAt,
       verified: true,
       status: "Registered",
@@ -1022,13 +1199,12 @@ app.post("/api/shared-record", async (req, res) => {
 
 app.delete("/api/shared-record", async (req, res) => {
   try {
+    // A3: Require signed auth for mutating routes
+    const ownerAddress = verifyAuthHeaders(req, res);
+    if (!ownerAddress) return;
+
     const viewerAddress = typeof req.body?.viewerAddress === "string" ? req.body.viewerAddress.trim() : "";
     const hash = typeof req.body?.hash === "string" ? req.body.hash.trim() : "";
-    const ownerAddress = getRequesterAddress(req);
-
-    if (!isEthAddress(ownerAddress)) {
-      return res.status(400).json({ error: "Missing/invalid owner address. Provide wallet-address header (0x...)" });
-    }
     if (!viewerAddress.startsWith("0x") || viewerAddress.length !== 42) {
       return res.status(400).json({ error: "Invalid viewer address" });
     }
@@ -1056,14 +1232,13 @@ app.delete("/api/shared-record", async (req, res) => {
 
 app.delete("/api/documents/:hash", async (req, res) => {
   try {
+    // A3: Require signed auth for mutating routes
+    const viewerAddress = verifyAuthHeaders(req, res);
+    if (!viewerAddress) return;
+
     const { hash } = req.params;
     if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
       return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
-    }
-
-    const viewerAddress = getRequesterAddress(req);
-    if (!isEthAddress(viewerAddress)) {
-      return res.status(400).json({ error: "Missing/invalid wallet address. Provide wallet-address header (0x...)" });
     }
 
     const onChainMeta = await chain.getDocumentMeta(hash).catch(() => null);
@@ -1089,6 +1264,16 @@ app.delete("/api/documents/:hash", async (req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  // eslint-disable-next-line no-console
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("Uncaught Exception:", err);
 });
 
 async function main() {

@@ -18,15 +18,25 @@ const AUTH_PROMPT = 'BDVS Authentication: ';
 
 /**
  * Derives a 256-bit AES-GCM CryptoKey from a wallet signature using PBKDF2.
+ * Supports document-bound key derivation: Sign("BDVS Encryption Key Generation: <addr>:<hash>").
  */
-export async function deriveWalletMasterKey(signer: ethers.Signer, walletAddress: string): Promise<CryptoKey> {
+export async function deriveWalletMasterKey(
+  signer: ethers.Signer,
+  walletAddress: string,
+  documentHash?: string
+): Promise<CryptoKey> {
   const normalizedAddr = walletAddress.toLowerCase();
-  const challenge = `${KEY_DERIVATION_PROMPT}${normalizedAddr}`;
+  const normalizedHash = documentHash ? documentHash.toLowerCase() : '';
+  const challenge = normalizedHash
+    ? `${KEY_DERIVATION_PROMPT}${normalizedAddr}:${normalizedHash}`
+    : `${KEY_DERIVATION_PROMPT}${normalizedAddr}`;
   const signature = await signer.signMessage(challenge);
 
   const encoder = new TextEncoder();
   const signatureBytes = encoder.encode(signature);
-  const saltBytes = encoder.encode(`bdvs-salt-${normalizedAddr}`);
+  const saltBytes = encoder.encode(
+    normalizedHash ? `bdvs-salt-${normalizedAddr}-${normalizedHash}` : `bdvs-salt-${normalizedAddr}`
+  );
 
   const baseKey = await window.crypto.subtle.importKey(
     'raw',

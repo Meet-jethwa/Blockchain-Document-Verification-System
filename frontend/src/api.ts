@@ -76,26 +76,34 @@ export type DocumentCollections = {
   shared: DocumentSummary[]
 }
 
-export async function fetchSharedDocuments(walletAddress: string): Promise<{ shared: DocumentSummary[] }> {
+export async function fetchSharedDocuments(
+  walletAddress: string,
+  authHeaders?: Record<string, string>,
+): Promise<{ shared: DocumentSummary[] }> {
   return requestJson<{ shared: DocumentSummary[] }>('/api/shared-documents', {
     method: 'GET',
     headers: {
       'wallet-address': walletAddress,
+      ...(authHeaders || {}),
     },
   })
 }
 
 export async function recordSharedDocument(
-  walletAddress: string,
+  viewerAddress: string,
   document: Pick<DocumentSummary, 'hash' | 'name' | 'owner' | 'createdAt' | 'cid'>,
+  authHeaders?: Record<string, string>,
 ): Promise<{ shared: DocumentSummary }> {
   return requestJson<{ shared: DocumentSummary }>('/api/shared-record', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'wallet-address': walletAddress,
+      ...(authHeaders || {}),
     },
-    body: JSON.stringify(document),
+    body: JSON.stringify({
+      ...document,
+      viewerAddress,
+    }),
   })
 }
 
@@ -232,11 +240,15 @@ export function postFileWithProgress<T>(
   })
 }
 
-export async function fetchProfile(walletAddress: string): Promise<{ profile: UserProfile }> {
+export async function fetchProfile(
+  walletAddress: string,
+  authHeaders?: Record<string, string>,
+): Promise<{ profile: UserProfile }> {
   return requestJson<{ profile: UserProfile }>('/api/profile', {
     method: 'GET',
     headers: {
       'wallet-address': walletAddress,
+      ...(authHeaders || {}),
     },
   })
 }
@@ -244,22 +256,28 @@ export async function fetchProfile(walletAddress: string): Promise<{ profile: Us
 export async function saveProfile(
   walletAddress: string,
   profile: Pick<UserProfile, 'name' | 'title' | 'email' | 'bio' | 'photoDataUrl' | 'preferredTheme'>,
+  authHeaders?: Record<string, string>,
 ): Promise<{ profile: UserProfile }> {
   return requestJson<{ profile: UserProfile }>('/api/profile', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
       'wallet-address': walletAddress,
+      ...(authHeaders || {}),
     },
     body: JSON.stringify(profile),
   })
 }
 
-export async function fetchDocuments(walletAddress: string): Promise<DocumentCollections> {
+export async function fetchDocuments(
+  walletAddress: string,
+  authHeaders?: Record<string, string>,
+): Promise<DocumentCollections> {
   return requestJson<DocumentCollections>('/api/documents', {
     method: 'GET',
     headers: {
       'wallet-address': walletAddress,
+      ...(authHeaders || {}),
     },
   })
 }

@@ -1,0 +1,690 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{tikz}
+\usepackage{tikz-cd}
+\usetikzlibrary{arrows.meta,fit,positioning,backgrounds,shapes.geometric,calc}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+\raggedbottom
+
+\title{Blockchain Document Verification System: A Privacy-Preserving Architecture Using Client-Side Encryption, Ethereum Smart Contracts, IPFS, and KECCAK-256}
+
+\author{\IEEEauthorblockN{1\textsuperscript{st} Hriday Shah}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+hriday.ps@somaiya.edu}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} K Kishore Kumar}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+kkishore.k@somaiya.edu}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Meet Jethwa}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+jethwa.mb@somaiya.edu}
+\and
+\IEEEauthorblockN{4\textsuperscript{th} Purnima N Ahirao}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+purnimaahirao@somaiya.edu}
+\and
+\IEEEauthorblockN{5\textsuperscript{th} Deepti Patole}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+deeptipatole@somaiya.edu}
+\and
+\IEEEauthorblockN{6\textsuperscript{th} Yogita Borse}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{KJ Somaiya School of Engineering}\\
+Mumbai, India \\
+yogitaborse@somaiya.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+The widespread digitisation of legal, academic, medical, and corporate records has intensified demand for verification systems that are simultaneously tamper-evident and privacy-preserving. Existing centralised approaches introduce single points of failure and expose document content to unnecessary third-party risk. This paper presents the Blockchain Document Verification System (BDVS), a web-based architecture that anchors document integrity proofs on the Ethereum Sepolia testnet while maintaining confidentiality through client-side encryption and off-chain ciphertext storage on the InterPlanetary File System (IPFS). Only the \texttt{keccak256} digest of each document is written to a Solidity smart contract. Encryption is performed entirely in the browser using an authenticated symmetric cipher (AES-256-GCM), with a per-wallet key derived from a signed wallet challenge; the backend server acts as a content-blind relay that handles ciphertext but never possesses the decryption key, plaintext, or material sufficient to reconstruct either. Request authentication is bound to wallet ownership through a signed, timestamped challenge verified server-side within a bounded replay window. The selection of \texttt{keccak256} over SHA-256, SHA-3, Blake2b, and MD5 is justified through a comparative evaluation of EVM execution cost, collision resistance, and protocol consistency. Empirical measurements indicate mean upload latency of 15--45 s (blockchain-confirmation-dominant) and mean download latency of 1--5 s (decentralised-storage-gateway-dominant). In a separate 1 MB microbenchmark, authenticated encryption added 1.17 ms relative to direct hashing. Initial document registration consumed approximately 208,000 gas on the local test network. A two-stage access-control model---server-side wallet authentication followed by smart-contract authorisation---combined with authenticated-cipher tag verification and per-download \texttt{keccak256} re-verification provides layered protection against unauthorised retrieval and ciphertext tampering without exposing plaintext to the backend.
+\end{abstract}
+
+\begin{IEEEkeywords}
+blockchain, document verification, decentralised storage, Ethereum, keccak256, AES-256-GCM, client-side encryption, content-blind relay, signed-challenge authentication, smart contracts, access control, cryptographic hashing
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Document authenticity verification is a foundational requirement across legal, academic, medical, and enterprise domains. Conventional pipelines delegate trust to centralised intermediaries---notaries, certificate authorities, or institutional registries---which introduces systemic vulnerabilities: single points of failure, elevated operational costs, exposure to insider fraud, and limited external auditability \cite{nakamoto2008bitcoin}.
+
+The immutability property of distributed ledger technology offers a structurally different trust model. Once a transaction is incorporated into a confirmed block, the data it carries becomes computationally infeasible to alter without invalidating every subsequent block in the chain \cite{buterin2014ethereum}. Applied to document verification, this property yields a permanent, publicly auditable proof of registration. However, writing raw document content on-chain is neither economically viable nor architecturally appropriate. Under Ethereum's storage-gas schedule, changing a previously zero storage slot to a non-zero value incurs a base \texttt{SSTORE} cost of 20,000 gas, excluding cold-access and transaction overhead \cite{wood2022ethereum}; storing even modest documents would therefore be prohibitively expensive. Furthermore, the inherent transparency of public blockchains is incompatible with the confidentiality requirements of most document verification use cases.
+
+BDVS resolves this tension through a deliberate separation of \textit{proof} from \textit{content}. A 256-bit \texttt{keccak256} digest---which changes irrevocably upon modification of even a single byte of the source document---is stored on-chain as an immutable registration record. The plaintext document is never exposed beyond the client browser: encryption is performed locally before any byte of file content leaves the user's machine, and the resulting ciphertext is pinned to a decentralised storage layer. The backend server acts purely as a content-blind relay that transports and stores ciphertext but never plaintext, keys, or initialisation vectors.
+
+The system's design is grounded in three architectural commitments: client-side key derivation and encryption, an authenticated cipher mode, and signature-based request authorisation, so that the backend structurally cannot observe document content, has no way to forge a user's identity, and cannot serve tampered ciphertext without detection.
+
+This paper makes the following contributions:
+\begin{enumerate}
+\item A complete reference architecture for privacy-preserving blockchain document verification, integrating an on-chain registry, a content-blind relay backend, decentralised ciphertext storage, and a client application performing all cryptographic operations locally.
+\item A client-side, wallet-derived key-management scheme in which encryption keys are generated from a signed wallet challenge and a wallet-specific salt, so that the backend never has access to plaintext or key material.
+\item A signed-challenge authorisation scheme with a replay window, providing cryptographic proof of wallet ownership on every authenticated request.
+\item An empirical comparative analysis of \texttt{keccak256} against MD5, SHA-256, SHA-3 (NIST), and Blake2b, with quantitative justification in terms of EVM gas cost, collision resistance, and protocol consistency.
+\item A two-stage access-control model combining server-side wallet authentication with smart-contract-level permission checks.
+\item A per-download cryptographic integrity re-verification mechanism, reinforced at the cipher level by authenticated-encryption tags and at the application level by on-chain \texttt{keccak256} re-verification, that detects deviations from the originally registered document.
+\end{enumerate}
+
+A reference implementation, including the smart contract, backend relay, and client application described in this paper, is publicly available at the project's version-control repository \cite{bdvsrepo}; Section~\ref{sec:simenv} lists the specific technologies used to build and evaluate it.
+
+\section{Related Work}
+
+\subsection{Blockchain-Based Document Integrity}
+Hasan and Salah \cite{hasan2018blockchain} demonstrated proof-of-existence using document hashes on a private Ethereum network, but did not address file privacy, key custody, or access control. Brotsis et al.\ \cite{brotsis2019blockchain} extended this model to digital forensic evidence by combining decentralised storage with Ethereum smart contracts; however, storage identifiers were kept on-chain, exposing file location metadata to all network participants. Nizamuddin et al.\ \cite{nizamuddin2019decentralized} adapted the model for academic certificate management, improving verifiability but providing no client-side or server-side key custody mechanism beyond ad hoc handling. BDVS addresses all three deficiencies: storage identifiers are never exposed on-chain, decryption keys are derived and used exclusively client-side so that no party other than the wallet owner ever possesses them, and fine-grained per-wallet access control is enforced at both the contract and API layers.
+
+\subsection{Decentralised Storage}
+Content-addressed, peer-to-peer storage protocols \cite{benet2014ipfs} are well suited to off-chain document storage. Several works have combined decentralised storage with blockchain-based integrity anchors \cite{chen2019blockchain, peng2024efficient}; the majority either retain plaintext content in storage---exposing files to any node---or store decryption keys on-chain, negating confidentiality. Naik et al.\ \cite{naik2024decentralized} employed symmetric encryption over a decentralised storage layer for file management but centralised key storage without a second authorisation tier. BDVS addresses both weaknesses: files are encrypted client-side, prior to ever leaving the browser, and decryption keys are never transmitted on-chain or to any server---eliminating the centralised key-storage bottleneck that Naik et al.\ leave unaddressed.
+
+\subsection{Smart-Contract Access Control}
+Attribute-based and role-based access control (RBAC) schemes on Ethereum have been proposed for IoT \cite{zhang2017iot} and healthcare \cite{azaria2016medrec}. Kalapaaking et al.\ \cite{kalapaaking2022blockchain} proposed a blockchain-based RBAC scheme for smart manufacturing environments. Hao et al.\ \cite{hao2023blockchain} introduced a cross-domain autonomous access control mechanism for IoT using smart contracts. BDVS complements contract-level authorisation with server-side signature verification, preventing a requester from obtaining ciphertext by merely asserting another wallet's address.
+
+\section{System Architecture}
+
+\subsection{High-Level Design}
+BDVS comprises three co-operating layers: a client application, a relay backend, and an on-chain smart-contract layer. All cryptographic operations---key derivation, encryption, and decryption---execute exclusively within the client layer, on the user's own device. The backend layer is deliberately reduced to a content-blind relay: it authenticates requests, moves ciphertext between the client and decentralised storage, and never has access to plaintext, keys, or initialisation vectors. Neither the backend nor the storage layer holds sufficient information to recover a document's plaintext; this partitioning is the primary mechanism by which the system protects confidentiality, and it is enforced structurally by the absence of any server-side code path through which the key could be obtained.
+
+\begin{figure}[!t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=4pt, minimum height=10mm,
+              minimum width=24mm, font=\small\bfseries, align=center,
+              inner sep=4pt, outer sep=0pt},
+  fe/.style={box, fill=teal!12,   draw=teal!70,   line width=0.8pt},
+  be/.style={box, fill=violet!10, draw=violet!60, line width=0.8pt},
+  bc/.style={box, fill=orange!15, draw=orange!70, line width=0.8pt},
+  band/.style={draw=#1!60, rounded corners=6pt, line width=1.2pt,
+               fill=#1, fill opacity=0.06, inner sep=13pt},
+  uarr/.style={-{Stealth[length=4pt,width=3pt]}, teal!70!black, line width=0.9pt},
+  darr/.style={-{Stealth[length=4pt,width=3pt]}, violet!70!black,
+               line width=0.9pt, dashed, dash pattern=on 3pt off 2pt},
+  lbl/.style={font=\tiny\bfseries, inner sep=1.5pt, outer sep=0pt,
+              fill=white, draw=gray!30, rounded corners=1pt, line width=0.3pt},
+]
+\node[fe] (react) {Client App};
+\node[fe, right=28mm of react] (mm) {Wallet};
+\node[fe, below=16mm of react] (wc)
+      {Encryption\\[1pt]Module};
+\node[be, below=30mm of wc]     (exp)  {Relay\\[1pt](content-blind)};
+\node[be, right=28mm of exp]    (mul)  {Upload\\[1pt]Handler};
+\node[be, below=16mm of exp]    (ipfs) {Decentralised\\[1pt]Storage};
+\node[bc, below=18mm of ipfs, xshift=20mm] (contract)
+      {Document Registry\\[1pt](Smart Contract)};
+\begin{scope}[on background layer]
+  \node[band=teal, fit=(react)(mm)(wc)] (flayer) {};
+  \node[band=violet, fit=(exp)(mul)(ipfs)] (blayer) {};
+  \node[band=orange, fit=(contract)] (clayer) {};
+\end{scope}
+\node[font=\footnotesize\bfseries, text=teal!80!black,
+      fill=teal!15, draw=teal!60, rounded corners=2pt,
+      inner sep=2pt, line width=0.7pt,
+      anchor=south west] at ([yshift=2mm]flayer.north west) {Client (all crypto happens here)};
+\node[font=\footnotesize\bfseries, text=violet!80!black,
+      fill=violet!12, draw=violet!55, rounded corners=2pt,
+      inner sep=2pt, line width=0.7pt,
+      anchor=south west] at ([yshift=2mm]blayer.north west) {Backend (content-blind relay)};
+\node[font=\footnotesize\bfseries, text=orange!85!black,
+      fill=orange!18, draw=orange!65, rounded corners=2pt,
+      inner sep=2pt, line width=0.7pt,
+      anchor=south west] at ([yshift=2mm]clayer.north west) {Blockchain};
+\draw[uarr] ([xshift=-3mm]react.south)
+    -- node[lbl,left=1pt]{U1 encrypt} ([xshift=-3mm]wc.north);
+\draw[uarr] ([xshift=-4mm]wc.south)
+    -- node[lbl,left=1pt,pos=0.25]{U2 ciphertext} ([xshift=-4mm]exp.north);
+\draw[uarr] ([yshift= 2mm]exp.east)
+    -- node[lbl,above=1pt]{U3} ([yshift= 2mm]mul.west);
+\draw[uarr] ([xshift=-4mm]exp.south)
+    -- node[lbl,left=1pt]{U4} ([xshift=-4mm]ipfs.north);
+\draw[uarr] (ipfs.east) -- ++(5mm,0)
+    -| node[lbl,right=1pt,pos=0.7]{U5 storage ID} (mul.south);
+\draw[uarr] ([xshift= 3mm]wc.north)
+    -- node[lbl,right=1pt]{U6 digest} ([xshift= 3mm]react.south);
+\draw[uarr] (react.east)
+    -- node[lbl,above=1pt]{U7 sign tx} (mm.west);
+\draw[uarr] (mm.east) -- ++(8mm,0)
+    |- node[lbl,right=1pt,pos=0.2]{U8 register document}
+       ([yshift=7mm]contract.north)
+    -- (contract.north);
+\draw[darr] (wc.west) -- ++(-16mm,0)
+    |- node[lbl,left=1pt,pos=0.15]{D1 signed request} ([xshift=-16mm]exp.north);
+\draw[darr] (exp.west) -- ++(-8mm,0)
+    |- node[lbl,left=1pt,pos=0.25]{D2 verify signature} (contract.west);
+\draw[darr] ([xshift= 3mm]exp.south)
+    -- node[lbl,right=1pt]{D3} ([xshift= 3mm]ipfs.north);
+\draw[darr] ([xshift=4mm]exp.north)
+    -- node[lbl,right=1pt,pos=0.75]{D4 ciphertext} ([xshift=4mm]wc.south);
+\draw[darr] (wc.east) -- ++(6mm,0)
+    |- node[lbl,right=1pt,pos=0.7]{D5 decrypt + re-hash}
+       ([yshift=-5mm]react.south)
+    -- (react.south);
+\end{tikzpicture}%
+}
+\caption{BDVS system architecture, presented at the level of architectural roles rather than implementation technology. Solid arrows denote the upload path (U1--U8); dashed arrows denote the download path (D1--D5). All encryption, decryption, key derivation, and digest re-verification execute inside the client; only the \texttt{keccak256} digest is written on-chain, and the backend relay never handles plaintext, keys, or initialisation vectors. The specific technologies implementing each role are listed in Section~\ref{sec:simenv}.}
+\label{fig:high-level-architecture}
+\end{figure}
+
+Table~\ref{tab:data-residency} enumerates the residency of each data artefact at rest across all system layers.
+
+\begin{table}[H]
+\caption{Data Residency Across System Layers}
+\label{tab:data-residency}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.26\linewidth}p{0.12\linewidth}p{0.12\linewidth}p{0.16\linewidth}p{0.12\linewidth}}
+\toprule
+Item & On-Chain & Storage & Server & Client \\
+\midrule
+Document hash (keccak256) & $\checkmark$ & -- & -- & $\checkmark$ \\
+File content (plaintext)  & -- & -- & Never & $\checkmark$ \\
+File content (encrypted)  & -- & $\checkmark$ & Transit only & $\checkmark$ \\
+Storage identifier         & -- & $\checkmark$ & $\checkmark$ & -- \\
+Encryption key            & -- & -- & Never & $\checkmark$ \\
+Cipher IV / auth tag      & -- & $\checkmark$ & Transit only & $\checkmark$ \\
+Wallet signature / nonce  & -- & -- & Verified & $\checkmark$ \\
+Owner wallet address      & $\checkmark$ & -- & $\checkmark$ & $\checkmark$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Repository Organisation}
+The reference implementation is organised into four architectural components, each maintained as a distinct directory within the project's version-control repository \cite{bdvsrepo}: an on-chain component holding the smart contract and its deployment scripts; a relay-backend component holding the API and content-relay logic; a client component holding the browser application and its cryptographic pipeline; and a scripts component holding deployment and instrumentation tooling. The repository README documents the mapping between the architectural roles described in this paper and their corresponding modules in the codebase.
+
+\subsection{System Roles}
+
+\textit{Smart-Contract Layer.} The on-chain document registry maintains a mapping from document digests to owner wallet addresses and manages permission state through grant and revoke operations that emit auditable events. It is the sole source of truth for registration and authorisation decisions.
+
+\textit{Relay Backend.} The backend receives already-encrypted uploads and pins the resulting ciphertext to the decentralised storage layer. It performs no cryptographic operations on file content: it never computes a digest over plaintext, never holds a decryption key, and never decrypts a downloaded file before relaying it to the client. Its responsibilities are (i) verifying the signed, timestamped challenge accompanying each request, (ii) checking view authorisation against the smart contract before serving ciphertext, and (iii) persisting only non-sensitive per-document metadata (storage identifier, owner address, filename) in a server-side document store.
+
+\textit{Client Application.} The client application manages wallet connectivity and owns the full cryptographic pipeline: signature-based key derivation, authenticated symmetric encryption and decryption, client-side \texttt{keccak256} digest computation, and post-decrypt digest re-verification. Every authenticated request to the backend carries a proof of wallet ownership alongside the claimed wallet address.
+
+\section{Security and Encryption Model}
+
+\subsection{File-Level Encryption}
+Each document is encrypted entirely on the client, prior to any network transmission, using an authenticated symmetric cipher (AES-256-GCM). A fresh initialisation vector is generated per file, and every ciphertext carries an authentication tag that is verified automatically on decrypt: an invalid tag causes decryption to be rejected before the bytes are treated as file content, giving tamper detection at the cipher layer itself rather than only after a full decrypt-and-rehash cycle. The plaintext file is never transmitted to, or held by, the backend at any point in the upload or download path---only the client and the end user ever observe it.
+
+\subsection{Key Management}
+The encryption key is derived deterministically, per wallet, by applying a standard password-based key-derivation function to a wallet signature obtained by prompting the connected wallet to sign a fixed, wallet-specific challenge string, combined with a wallet-specific salt. The same wallet can reconstruct the key by reproducing the same signature input; the server, the storage layer, and other observers see only ciphertext. A different wallet that has been granted contract-level viewing permission cannot derive the owner's encryption key from that permission alone, so cross-wallet decryption requires a separate key-wrapping, re-encryption, or out-of-band key-sharing mechanism that is not implemented in the current prototype. The backend's document store is correspondingly reduced to the storage identifier, owner wallet address, and original filename and contains no decryption key material.
+
+\subsection{Two-Stage Authentication and Authorisation}
+Download access is enforced through two sequential controls, as illustrated in Fig.~\ref{fig:two-layer-authorization}:
+
+\begin{enumerate}
+\item \textit{Backend authentication.} The relay verifies a signed, timestamped challenge and confirms that the recovered address matches the claimed wallet address. This prevents address spoofing and bounds replay through a bounded validity window.
+
+\item \textit{Smart-contract authorisation.} After authentication succeeds, the backend checks view authorisation against the on-chain registry before relaying ciphertext. The registry maintains the per-document permission mapping, and exposes grant and revoke operations that propagate permissions across versioned documents sharing a root registration.
+\end{enumerate}
+
+The requesting wallet address is proven, not merely asserted. This is achieved through a signed-challenge scheme built on the same message-signing standard used natively by Ethereum wallets for off-chain, human-readable message signing (commonly known as EIP-191): the client signs a timestamped challenge with the connected wallet and transmits the claimed wallet address, the resulting signature, and the signing time alongside the request. Conceptually, this gives the backend three architectural guarantees without ever requiring the wallet's private key to leave the client: (i) the signature can only have been produced by the holder of the wallet's private key, so an address cannot be claimed by an attacker who does not control it; (ii) the signature is cheap for the backend to verify against the claimed address using standard public-key recovery, requiring no shared secret or prior registration step; and (iii) because the signed message embeds a timestamp, the backend can bound how long a captured signature remains usable. If the recovered address does not match the claimed address, the request is rejected before any contract-level check is attempted. A bounded replay window (ten minutes in the current prototype) is enforced against the signed timestamp: signatures older than this window, or timestamped in the future beyond reasonable clock skew, are rejected, bounding the exposure of a captured signature to a short interval rather than granting indefinite reuse.
+
+\subsection{Per-Download Integrity Re-Verification}
+Beyond access control, the system performs cryptographic integrity verification on every download, reinforced at two layers. The first layer is the authenticated-cipher tag itself: because the backend relay cannot decrypt on the user's behalf, decryption runs on the client, and any ciphertext modification---whether introduced in transit, at rest in storage, or by a misbehaving relay---causes the authentication-tag check to fail before a single byte of the corrupted content is treated as file data. The second layer: after a successful decrypt, the client recomputes \texttt{keccak256} over the recovered plaintext and compares it against the digest embedded in the requested document identifier, which the client obtained from the on-chain registration record. A mismatch is surfaced to the user as a client-side integrity warning. Registration metadata retrieved from the on-chain registry (owner address, timestamp, block number) is attached to the relay response before decryption, and the client combines these with the local digest match to populate a \textit{Hash Verified} attestation panel, giving the user a human-readable, non-repudiable proof of authenticity derived from immutable on-chain event history and a locally re-computed digest rather than a server's unverifiable say-so.
+
+\begin{figure}[!t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  node distance = 5mm and 0mm,
+  term/.style   = {draw, rounded corners=8pt, minimum width=54mm,
+                   minimum height=9mm, align=center,
+                   font=\scriptsize\bfseries,
+                   fill=teal!18, draw=teal!70, line width=0.9pt},
+  proc/.style   = {draw, rounded corners=3pt, minimum width=54mm,
+                   minimum height=9mm, align=center,
+                   font=\scriptsize,
+                   fill=violet!8, draw=violet!55, line width=0.8pt},
+  dec/.style    = {diamond, aspect=2.8, draw, align=center,
+                   font=\scriptsize\bfseries,
+                   fill=orange!15, draw=orange!65, line width=0.9pt,
+                   inner sep=1pt},
+  err/.style    = {draw, rounded corners=3pt, minimum width=34mm,
+                   minimum height=8mm, align=center,
+                   font=\scriptsize\itshape,
+                   fill=red!8, draw=red!55, line width=0.8pt},
+  head/.style   = {draw, rounded corners=3pt, minimum width=54mm,
+                   minimum height=8mm, align=center,
+                   font=\scriptsize,
+                   fill=blue!6, draw=blue!40, line width=0.8pt},
+  stream/.style = {draw, rounded corners=8pt, minimum width=54mm,
+                   minimum height=9mm, align=center,
+                   font=\scriptsize\bfseries,
+                   fill=green!12, draw=green!55, line width=0.9pt},
+  arr/.style    = {-{Stealth[length=3.5pt,width=2.5pt]},
+                   line width=0.8pt, gray!70!black},
+  lbl/.style    = {font=\tiny\bfseries, fill=white,
+                   inner sep=1pt, rounded corners=1pt},
+]
+\node[term]  (client)
+      {Client: Request document download\\
+       with claimed wallet address, signature,\\
+       and signing timestamp};
+\node[proc,  below=5mm of client]   (sigcheck)
+      {Backend: verify signature against claimed address; check replay window};
+\node[dec,   below=5mm of sigcheck] (sigdec)   {Signature valid?};
+\node[err,   right=16mm of sigdec]  (e401)
+      {Rejected\\``Invalid or expired signature''};
+\node[proc,  below=9mm of sigdec]   (auth)
+      {Backend: check view authorisation on-chain};
+\node[dec,   below=5mm of auth]     (authdec)  {Authorized?};
+\node[err,   right=16mm of authdec] (e403)
+      {Rejected\\``Not authorized''};
+\node[proc,  below=9mm of authdec]  (fetch)
+      {Backend: fetch ciphertext from decentralised storage --- \textit{no decryption occurs here}};
+\node[proc,  below=5mm of fetch]    (proof)
+      {Backend: retrieve registration proof\\
+       $\rightarrow$ owner, timestamp, block number};
+\node[head,  below=5mm of proof]    (headers)
+      {Relay ciphertext together with the\\
+       registration proof metadata};
+\node[proc,  below=5mm of headers]  (decrypt)
+      {Client: decrypt with wallet-derived key --- authentication tag verified automatically};
+\node[dec,   below=5mm of decrypt]  (authtagdec) {AuthTag valid?};
+\node[err,   right=16mm of authtagdec] (etamper)
+      {Decryption rejected\\``Ciphertext tampered''};
+\node[proc,  below=9mm of authtagdec] (rehash)
+      {Client: recompute \texttt{keccak256(plaintext)} and compare to requested identifier};
+\node[dec,   below=5mm of rehash]   (hashdec)  {Digest matches?};
+\node[err,   right=16mm of hashdec] (e412)
+      {``Integrity check failed'' (client-side warning)};
+\node[stream,below=9mm of hashdec]  (streamout)
+      {Display plaintext + \textit{Hash Verified} attestation panel};
+\draw[arr] (client)   -- (sigcheck);
+\draw[arr] (sigcheck) -- (sigdec);
+\draw[arr] (sigdec)   -- node[lbl,left=2pt]{Yes} (auth);
+\draw[arr] (auth)     -- (authdec);
+\draw[arr] (authdec)  -- node[lbl,left=2pt]{Yes} (fetch);
+\draw[arr] (fetch)    -- (proof);
+\draw[arr] (proof)    -- (headers);
+\draw[arr] (headers)  -- (decrypt);
+\draw[arr] (decrypt)  -- (authtagdec);
+\draw[arr] (authtagdec) -- node[lbl,left=2pt]{Yes} (rehash);
+\draw[arr] (rehash)   -- (hashdec);
+\draw[arr] (hashdec)  -- node[lbl,left=2pt]{Yes} (streamout);
+\draw[arr] (sigdec.east)     -- node[lbl,above=1pt]{No} (e401.west);
+\draw[arr] (authdec.east)    -- node[lbl,above=1pt]{No} (e403.west);
+\draw[arr] (authtagdec.east) -- node[lbl,above=1pt]{No} (etamper.west);
+\draw[arr] (hashdec.east)    -- node[lbl,above=1pt]{No} (e412.west);
+\begin{scope}[on background layer]
+  \node[draw=gray!25, rounded corners=6pt, fill=gray!3,
+        line width=0.6pt, inner sep=8pt,
+        fit=(client)(sigcheck)(sigdec)(e401)(auth)(authdec)(e403)(fetch)
+            (proof)(headers)(decrypt)(authtagdec)(etamper)
+            (rehash)(hashdec)(e412)(streamout)]
+        {};
+\end{scope}
+\end{tikzpicture}%
+}
+\caption{Download flow, presented at the level of architectural roles rather than implementation technology. Wallet authentication and smart-contract authorisation happen server-side, but decryption, authentication-tag verification, and \texttt{keccak256} re-verification happen client-side because the backend relay never possesses the decryption key or plaintext. Rejections at the top of the flow are returned by the server on failed signature or contract authorisation; an authentication-tag or digest mismatch is detected locally by the client.}
+\label{fig:two-layer-authorization}
+\end{figure}
+
+\section{Hash Function Selection: Keccak256 vs.\ Alternatives}
+
+The choice of cryptographic hash function has direct implications for on-chain gas expenditure, security margin, and developer ecosystem compatibility. Five candidate algorithms were evaluated: MD5, SHA-256, SHA-3 (NIST), Blake2b, and the EVM-native \texttt{keccak256}. Table~\ref{tab:hash-comparison} summarises the comparison.
+
+\begin{table*}[!t]
+\caption{Comparative Analysis of Hash Functions for EVM-Based Document Verification}
+\label{tab:hash-comparison}
+\centering
+\scriptsize
+\begin{tabular}{lcccccc}
+\toprule
+Algorithm & Output (bits) & Collision Resistance & EVM Native & Gas/32B & CPU Throughput (MB/s) & Recommended \\
+\midrule
+MD5        & 128     & Broken        & No            & $\sim$600--800+ & 650 & No  \\
+SHA-256    & 256     & Strong        & Precompile    & $\sim$60--80    & 440 & Partial \\
+SHA-3 (NIST) & 256  & Strong        & No            & $\sim$600--800+ & 280 & No  \\
+Blake2b    & 256/512 & Strong        & No            & $\sim$600--800+ & 900 & No  \\
+Keccak256  & 256     & Strong        & Yes (opcode)  & $30 + 6$/word   & 380 & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{MD5}
+MD5 produces a 128-bit digest and executes rapidly in software; however, it is categorically unsuitable for any security-critical application. Practical chosen-prefix collision attacks against MD5 have been demonstrated on commodity hardware since 2004 \cite{wang2005break}, enabling an adversary to construct a fraudulent document whose digest matches that of a legitimately registered original. Deployment of MD5 in BDVS would completely invalidate the integrity guarantee that the system is designed to provide.
+
+\subsection{SHA-256}
+SHA-256 is computationally secure and is accessible on the EVM via a dedicated precompiled contract, reducing its cost relative to a fully interpreted implementation. Nevertheless, SHA-256 lacks a direct EVM opcode and must be invoked through the precompile call mechanism, incurring overhead that exceeds the native \texttt{keccak256} opcode. Furthermore, the EVM's built-in \texttt{keccak256} hashing function compiles directly to a native EVM opcode (which implements the Ethereum-specific Keccak variant rather than the NIST SHA-3 standard), placing SHA-256 at a structural cost disadvantage within the EVM execution model.
+
+\subsection{SHA-3 (NIST Standard)}
+The NIST-standardised SHA-3 shares the Keccak sponge construction with \texttt{keccak256} but employs a different domain-separation padding scheme. Consequently, SHA-3 is not natively supported by any EVM opcode and must be instantiated in interpreted contract bytecode, incurring approximately 600--800 gas per 32-byte block---one to two orders of magnitude higher than the native \texttt{keccak256} opcode. For a system whose trust model depends on on-chain hash verification, this cost differential is operationally prohibitive at any meaningful registration volume.
+
+\subsection{Blake2b}
+Blake2b achieves the highest software throughput (${\approx}900$~MB/s) among the evaluated candidates and provides strong security guarantees, but has no EVM-native representation. On-chain use requires a full interpreted-bytecode implementation, producing gas costs comparable to interpreted SHA-3. Given that the dominant hashing workload in BDVS occurs at the on-chain verification stage, the absence of native EVM support disqualifies Blake2b irrespective of its off-chain throughput advantage.
+
+\subsection{Keccak256 (Selected)}
+\texttt{Keccak256} is deeply embedded in the Ethereum protocol stack: it underlies address derivation, transaction hash computation, and the native EVM hashing opcode. The built-in \texttt{keccak256()} hashing function compiles directly to this opcode, whose execution cost is 30 gas plus 6 gas per 32-byte input word, excluding memory-expansion costs. This remains substantially cheaper than software-implemented alternatives. Its 256-bit output provides $2^{128}$ collision resistance under the birthday bound, which is computationally infeasible to breach with current or foreseeable technology. The Keccak sponge construction has withstood over a decade of intensive public cryptanalysis \cite{bertoni2013keccak}.
+
+Three properties make \texttt{keccak256} uniquely appropriate for BDVS: (i) EVM-native gas efficiency (30 gas plus 6 gas per 32-byte word, versus the higher call and execution costs of alternatives); (ii) protocol consistency with the Ethereum toolchain, requiring no additional hashing libraries; and (iii) the absence of any practical collision or preimage attack against its full 256-bit output.
+
+\section{System Design}
+
+\subsection{On-Chain Document Registry}
+The on-chain registry stores each document's \texttt{keccak256} digest in a record mapped to the registering wallet address. At an architectural level, the registry exposes the following capabilities:
+
+\begin{itemize}
+\item \textbf{Register Document} --- records a new digest under the caller's wallet address as its owner; raises a registration event.
+\item \textbf{Add Document Version} --- associates a new version digest with an existing root registration; raises a version-added event.
+\item \textbf{Grant Viewer Access} / \textbf{Revoke Viewer Access} --- per-document access grant and revocation for a specified wallet.
+\item \textbf{Grant Root Viewer Access} / \textbf{Revoke Root Viewer Access} --- root-level access grant and revocation, propagated to all versions associated with a root registration.
+\item \textbf{Check View Permission} --- read-only authorisation check invoked by the backend before every download.
+\item \textbf{Check Document Exists} --- read-only existence check used by verification operations.
+\item \textbf{Revoke Document} / \textbf{Revoke Document Root} --- invalidation capabilities restricted to the document owner.
+\end{itemize}
+
+All state-modifying capabilities raise events, establishing an immutable on-chain audit trail. The registry stores the document digest but not the storage identifier, preserving the separation of proof from content.
+
+\subsection{Relay Backend Interface}
+
+The backend exposes a small set of request-handling capabilities. Capabilities that access document-specific resources require the wallet-proof triple described in Section~IV-C (claimed address, signature, and timestamp). Table~\ref{tab:backend-api-endpoints} enumerates them at the level of what each capability does, rather than its concrete route or handler name. The upload pipeline is structured so that all content-sensitive computation happens client-side before the request reaches the backend: the client computes \texttt{keccak256} over the raw plaintext bytes, derives the wallet-specific encryption key, and encrypts the file; only the resulting ciphertext, together with the signed wallet proof, is transmitted to the backend. On the backend, the upload-handling capability buffers the already-encrypted bytes, the signature is verified, and the ciphertext is pinned to decentralised storage; the resulting storage identifier, owner wallet address, and original filename---but no key material---are written atomically to the server-side document store.
+
+\begin{table*}[!t]
+\caption{Relay Backend Capabilities}
+\label{tab:backend-api-endpoints}
+\centering
+\scriptsize
+\begin{tabular}{p{0.30\textwidth}p{0.62\textwidth}}
+\toprule
+Capability & Description \\
+\midrule
+Check Liveness & Confirms the backend process and its chain connectivity are healthy \\
+Upload Encrypted Document & Receives an already-encrypted document plus a signed wallet proof; verifies the signature, pins ciphertext to decentralised storage, returns a storage identifier \\
+Verify Uploaded Document & Verifies the signed wallet proof; checks a client-supplied digest for on-chain registration; returns a verification result \\
+Verify Digest & Checks a caller-supplied raw digest against the on-chain registry without re-uploading the file \\
+Download Document & Verifies the signed wallet proof, authorises via the on-chain registry, fetches ciphertext from decentralised storage, and relays it with on-chain proof metadata for client-side decryption and re-verification \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Client Application}
+The client application manages wallet connectivity and performs the full cryptographic pipeline locally. File registration follows a three-phase protocol: the client first prompts the wallet to sign the encryption-key challenge and derives the encryption key locally; it then computes the \texttt{keccak256} digest over the plaintext and encrypts the file, sending the ciphertext and signed wallet proof to the upload capability; upon receipt of the returned storage identifier, it prompts the wallet a second time to confirm a document-registration transaction carrying the locally computed digest. This ordering guarantees that the file is encrypted client-side and pinned to storage before any on-chain interaction occurs, and that the backend at no point possesses plaintext or key material. If the user declines the registration transaction, the encrypted file persists in storage, but no on-chain digest record exists; the document is therefore not considered registered within the system. On download, the client decrypts the relayed ciphertext locally, re-verifies the \texttt{keccak256} digest against the requested identifier, and surfaces the on-chain proof metadata in a \textit{Hash Verified} panel.
+
+\section{System Workflow}
+
+The upload workflow guides a user through file selection, client-side encryption and registration, and confirmation that the document's digest has been recorded on-chain; the management workflow allows an owner to view their registered documents and to grant or revoke viewer access; and the download workflow surfaces a \textit{Hash Verified} attestation once decryption and digest re-verification succeed on the client. Screenshots of each stage of these workflows, captured from the reference implementation described in Section~\ref{sec:simenv}, are provided in the Appendix (Figs.~\ref{fig:upload-document}--\ref{fig:verified-download}).
+
+\section{Performance and Gas Metrics}
+
+\begin{table}[H]
+\caption{Measured On-Chain Gas Consumption (Local Test Network)}
+\label{tab:gas-consumption}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{p{0.34\linewidth}p{0.17\linewidth}p{0.40\linewidth}}
+\toprule
+Capability & Gas Used & Notes \\
+\midrule
+Register Document       & 207,825 & Cold storage write; first document (new record slot) \\
+Add Document Version     & 185,479 & Version digest appended to existing root mapping \\
+Grant Viewer Access            & 56,392  & Cold storage write in per-document viewer mapping \\
+Revoke Viewer Access           & 27,632  & Warm storage reset (slot already initialised) \\
+Grant Root Viewer Access        & 56,998  & Cold storage write in root-document viewer mapping \\
+Revoke Root Viewer Access       & 30,158  & Warm storage reset \\
+Revoke Document         & 48,660  & Status flag update on existing document slot \\
+Revoke Document Root     & 51,178  & Status flag update across root and version slots \\
+Register Document (2nd) & 190,725 & Warm deployer array; lower than first registration \\
+Check View Permission (read-only) & 0       & Read-only lookup; no gas when called externally \\
+Verify Document (read-only)  & 0       & Read-only lookup; no gas when called externally \\
+Check Document Revoked (read-only) & 0     & Read-only lookup; no gas when called externally \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The gas measurements in Table~\ref{tab:gas-consumption} were obtained by executing each capability against a freshly deployed registry on a local test network and recording the gas used from each transaction receipt. \textbf{Register Document} incurs the highest measured cost because it initialises several previously zero storage slots and updates indexing structures. Grant operations also write previously zero permission slots, whereas revoke operations reset existing non-zero slots and therefore have a different cost and refund profile. Read-only capabilities (\textbf{Check View Permission}, \textbf{Check Document Exists}, \textbf{Verify Document}) are executed as local state reads; callers do not submit a transaction or pay gas for these calls.
+
+\begin{table}[H]
+\caption{Measured Operation Latency (5-Run Mean)}
+\label{tab:system-performance-latency}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{p{0.43\linewidth}p{0.27\linewidth}p{0.20\linewidth}}
+\toprule
+Operation & Workload & Mean Latency \\
+\midrule
+keccak256 digest computation (client) & 1 MB file & 41 ms \\
+Authenticated encryption (client)       & 1 MB file & 1 ms \\
+Authenticated decryption + tag check (client) & 1 MB file & $<$1 ms \\
+Hash + encrypt pipeline (client)      & 5 MB file & 207 ms \\
+Ciphertext pin to decentralised storage          & 1 MB file & 1,234 ms \\
+Storage gateway fetch (cold cache)       & 10 KB file & 5,347 ms \\
+Verify Document (read-only call)     & Local node   & 4 ms \\
+Check View Permission (read-only call)    & Local node   & 4 ms \\
+Get Document Metadata (read-only call)    & Local node   & 13 ms \\
+Get Document Versions (read-only call) & Local node  & 14 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The latency profile in Table~\ref{tab:system-performance-latency} reveals that local cryptographic operations (authenticated encryption and \texttt{keccak256}, both executed on the client) contribute negligible latency relative to network-bound operations. The dominant latency factor during upload is blockchain confirmation time (12--36~s on the deployment testnet, not measured in isolation above); the dominant factor during download is cold-cache storage-gateway retrieval (5.3~s for a 10~KB object), which reflects CDN propagation delays inherent to the public storage gateway rather than any property of the BDVS architecture. Smart-contract read calls via a local test node exhibit latencies in the range of 4--14~ms, confirming that authorisation checks contribute negligible overhead to the download path when a co-located node is available.
+
+\subsection{Client-Side Cryptographic Overhead}
+Moving encryption and digest computation onto the client raises a natural question: does authenticated, client-side cryptography impose a measurable tax relative to plain hashing? Table~\ref{tab:pipeline-overhead} isolates this cost directly by comparing a direct-hashing baseline against the full encrypt-plus-hash pipeline on an identical 1~MB payload.
+
+\begin{table}[H]
+\caption{Encrypted-Pipeline Overhead (1~MB Payload)}
+\label{tab:pipeline-overhead}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{p{0.42\linewidth}p{0.24\linewidth}p{0.24\linewidth}}
+\toprule
+Pipeline Component & Mean Latency & Overhead vs.\ Baseline \\
+\midrule
+Direct hashing baseline (1~MB plaintext) & 0.7086 ms & Baseline (0.00 ms) \\
+Authenticated encryption + hash pipeline & 1.8795 ms & +1.1709 ms (+165.25\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+In relative terms, authenticated client-side encryption more than doubles the cost of this isolated cryptographic microbenchmark; in absolute terms, the measured increment is 1.17~ms. Table~\ref{tab:network-baselines} places this figure alongside the network- and consensus-layer operations that dominate end-to-end latency. The increment is smaller than a local contract read and approximately three to four orders of magnitude smaller than storage retrieval and blockchain confirmation delays, making it unlikely to affect perceived responsiveness.
+
+\begin{table}[H]
+\caption{Network and Consensus Delay-Layer Baselines}
+\label{tab:network-baselines}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.30\linewidth}p{0.18\linewidth}p{0.18\linewidth}p{0.22\linewidth}}
+\toprule
+Operation & Target Layer & Mean / Expected Range & Dominant Factor \\
+\midrule
+Smart-contract read (Check View Permission) & Local / RPC node & 4--15 ms & Network round-trip \\
+Storage gateway fetch (cold cache) & Decentralised storage gateway & 1,200--5,300 ms & P2P routing \& gateway CDN \\
+On-chain registration & Ethereum testnet & 12,000--36,000 ms & PoS block confirmation (12~s slot) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Enterprise Volume and Gas-Cost Scaling}
+Using the measured first-registration cost of 207,825 gas as a conservative per-document estimate, on-chain registration cost scales linearly with document volume and is sensitive to prevailing gas prices. Table~\ref{tab:volume-cost} projects cumulative gas and USD cost across representative registration volumes and gas-price tiers at a reference price of \$3,000/ETH.
+
+\begin{table}[H]
+\caption{Enterprise Volume and Financial Scaling Cost Model (ETH = \$3,000 USD)}
+\label{tab:volume-cost}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.16\linewidth}p{0.17\linewidth}p{0.15\linewidth}p{0.17\linewidth}p{0.15\linewidth}}
+\toprule
+Volume (docs) & Cumulative gas & Cost @ 10 gwei & Cost @ 25 gwei (baseline) & Cost @ 50 gwei \\
+\midrule
+1              & 207,825       & \$6.23      & \$15.59      & \$31.17 \\
+100            & 20,782,500    & \$623.48    & \$1,558.69   & \$3,117.38 \\
+1,000          & 207,825,000   & \$6,234.75  & \$15,586.88  & \$31,173.75 \\
+10,000         & 2,078,250,000 & \$62,347.50 & \$155,868.75 & \$311,737.50 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At the 25~gwei baseline used elsewhere in this evaluation, registering 1,000 documents costs approximately \$15,587, and registering 10,000 documents costs approximately \$155,869. At 100~gwei (a congested-network tier not shown in Table~\ref{tab:volume-cost} but linearly derivable), the 10,000-document cost would reach approximately \$623,475. This scaling underscores that BDVS's on-chain footprint is deliberately minimal---one 32-byte digest per document---because any richer on-chain payload would increase these costs further.
+
+\section{Results and Discussion}
+
+End-to-end testing was conducted on the deployment testnet described in Section~\ref{sec:simenv}. The following outcomes were observed:
+
+\begin{enumerate}
+\item \textit{Integrity verification.} Modification of any byte in a ciphertext causes authenticated-cipher tag verification to fail client-side, immediately and independently of the on-chain record. Separately, modification of the recovered plaintext (a scenario the authentication tag alone cannot cover, since it only certifies fidelity to what was actually encrypted) alters its \texttt{keccak256} digest, causing the client-side re-verification against the requested identifier to fail. The blockchain record functions as a computationally binding fingerprint at both layers.
+
+\item \textit{File privacy.} Plaintext and decryption keys are not present in any on-chain transaction or backend-persisted record. Storage identifiers are retained by the backend as routing metadata but are not written on-chain. Because encryption, decryption, and key derivation execute client-side, the backend cannot observe plaintext during the document lifecycle; plaintext can be reconstructed only by a client that possesses the corresponding key.
+
+\item \textit{Access control enforcement.} An unauthorised wallet address---even one with knowledge of the document digest and a validly signed request---is rejected when the smart-contract permission check fails. Separately, a request bearing a spoofed wallet address without a matching valid signature is rejected before contract authorisation is attempted. No bypass of either stage was identified during testing.
+
+\item \textit{Transaction costs.} The initial registration call consumed 207,825 gas on the local test node. Grant and revoke operations consumed 56,392 and 27,632 gas respectively, reflecting their different storage-write patterns. At a 25~gwei baseline and \$3,000/ETH, the conservative first-registration estimate corresponds to approximately \$15.59 per document and \$155,869 for 10,000 documents (Table~\ref{tab:volume-cost}).
+
+\item \textit{Two-phase upload correctness.} Declining the registration transaction leaves the encrypted file persisting in storage, but produces no on-chain digest record. The document is therefore not reachable through any authenticated download path. No orphaned on-chain digests without corresponding stored ciphertext were observed during testing.
+
+\item \textit{Client-side cryptographic overhead.} The pipeline's authenticated encryption adds 1.17~ms relative to a direct-hashing baseline on a 1~MB payload (Table~\ref{tab:pipeline-overhead})---negligible against the millisecond-to-second costs of contract reads, storage-gateway fetches, and blockchain confirmation that dominate end-to-end latency (Table~\ref{tab:network-baselines}).
+\end{enumerate}
+
+\section{Simulation Environment}
+\label{sec:simenv}
+
+The architectural roles described in Sections~III--VI are, in this evaluation, realised as a concrete prototype. This section is the sole location in the paper where specific technology choices are named; every other section describes the system purely in terms of architectural roles and capabilities, independent of implementation.
+
+The on-chain document registry was authored in Solidity, compiled and deployed via Hardhat to the Ethereum Sepolia testnet, and accessed from the client through Ethers.js v6. The relay backend was implemented as a Node.js/Express application using ES Modules, receiving already-encrypted multipart uploads via Multer with in-memory buffering, and pinning ciphertext to IPFS through the Pinata REST API; per-document metadata was persisted in a server-side JSON document store. The client application was implemented as a React/TypeScript single-page application built with Vite, communicating with the MetaMask browser extension via the injected \texttt{window.ethereum} provider. All client-side cryptographic operations---signature-based key derivation, AES-256-GCM encryption and decryption, and \texttt{keccak256} digest computation---were performed using the browser's native Web Crypto API (\texttt{crypto.subtle}). The encryption key was derived via PBKDF2 with 100,000 SHA-256 iterations over an EIP-191-signed wallet challenge. Backend API calls were routed through a typed client module that attached the wallet-proof headers (claimed address, signature, and timestamp) to every authenticated request.
+
+Gas and latency measurements reported in Section~VIII were collected against this stack: gas figures were measured on a local Hardhat test node, and latency figures reflect a combination of local browser benchmarks and live calls to Sepolia and the Pinata IPFS gateway. The complete source code for this environment, including the smart contract, backend, and frontend, is available at the project repository \cite{bdvsrepo}, whose README maps each architectural capability named in this paper to its corresponding function in the codebase.
+
+\section{Limitations and Future Scope}
+
+The current implementation is a functional prototype and exhibits several limitations that must be addressed before production deployment. The server-side document store does not support concurrent write operations and will not scale beyond a single-process backend; replacement with a proper database engine would enable concurrent access, indexed queries, and a tamper-evident audit log. Document ownership is bound to a single wallet address; enterprise use cases require ownership transfer primitives or $m$-of-$n$ multi-signature ownership schemes \cite{shamir1979share}. The backend presently performs no request rate limiting, structured logging, or health telemetry, leaving it susceptible to denial-of-service under public deployment conditions.
+
+Client-side key derivation and encryption introduce several open problems that the current prototype does not fully resolve. First, any party that obtains the fixed-message wallet signature can derive the wallet's encryption key; a compromised wallet or phishing-obtained signature therefore compromises every document encrypted under that wallet-derived key. The key-derivation function cannot mitigate disclosure of the signature itself because the signature is the effective keying secret. Second, reliable recovery assumes that the wallet reproduces compatible signature bytes for the fixed challenge. Although common Ethereum wallets use deterministic signing, the design should not depend on wallet-specific signature behaviour without an explicit interoperability and recovery test. Third, contract-level viewer permission does not provide a different wallet with the owner's encryption key. The current grant/revoke interface therefore controls ciphertext retrieval but requires a separate key-wrapping, re-encryption, or secure key-sharing mechanism before an authorised viewer can decrypt the file. Fourth, revocation cannot remove plaintext that a viewer has already downloaded. Fifth, repeated wallet prompts introduce user-experience friction, and no session-caching mechanism for verified signatures is implemented. Finally, hashing and encryption run synchronously on the client's main thread; large documents may therefore block the interface on lower-powered devices unless these operations are moved to a background worker thread.
+
+\section{Conclusion}
+
+BDVS demonstrates a viable architecture for tamper-evident, privacy-preserving document verification using public blockchain infrastructure. Client-side key derivation and authenticated encryption, combined with signed, replay-protected request authentication, mean the backend relay has no code path through which it can reconstruct plaintext from the data it stores.
+
+The selection of \texttt{keccak256} over MD5, SHA-256, SHA-3, and Blake2b is justified by its native EVM execution path, consistency with the Ethereum toolchain, and strong collision resistance. Empirical measurements indicate that upload latency is dominated by blockchain confirmation time (12--36~s) and download latency by storage-gateway cold-cache retrieval (${\approx}5~$s); the isolated microbenchmark measured only 1.17~ms of incremental authenticated-encryption overhead relative to direct hashing. Initial document registration consumed 207,825 gas on the local test node, while measured access-control operations consumed approximately 27,000--57,000 gas. Using the first-registration measurement conservatively, cumulative registration cost reaches an estimated \$155,869 for 10,000 documents at a 25~gwei, \$3,000/ETH baseline.
+
+The combination of client-side encrypted storage, on-chain digest anchoring, signed and replay-protected authentication, smart-contract authorisation, and two-stage cryptographic verification (authenticated-cipher tags plus on-chain digest matching) provides tamper evidence without exposing plaintext to the backend. Signature-derived key recovery, secure key distribution to authorised viewers, and post-download revocation remain acknowledged limitations for future work. A complete reference implementation is available at \cite{bdvsrepo}.
+
+\begin{thebibliography}{18}
+
+\bibitem{nakamoto2008bitcoin}
+S. Nakamoto, ``Bitcoin: A peer-to-peer electronic cash system,'' 2008. [Online]. Available: \url{https://bitcoin.org/bitcoin.pdf}
+
+\bibitem{buterin2014ethereum}
+V. Buterin, ``Ethereum: A next-generation smart contract and decentralized application platform,'' Ethereum White Paper, 2014. [Online]. Available: \url{https://ethereum.org/en/whitepaper/}
+
+\bibitem{wood2022ethereum}
+G. Wood, ``Ethereum: A secure decentralised generalised transaction ledger,'' Ethereum Yellow Paper, 2022.
+
+\bibitem{benet2014ipfs}
+J. Benet, ``IPFS --- Content addressed, versioned, P2P file system,'' arXiv preprint arXiv:1407.3561, 2014.
+
+\bibitem{hasan2018blockchain}
+H. R. Hasan and K. Salah, ``Blockchain-based solution for proof of delivery of physical assets with single and multiple transporters,'' \textit{IEEE Access}, vol. 6, pp. 46781--46793, 2018.
+
+\bibitem{brotsis2019blockchain}
+S. Brotsis et al., ``Blockchain solutions for forensic evidence preservation in IoT environments,'' in \textit{Proc. IEEE Conf. Network Softwarization (NetSoft)}, Paris, 2019, pp. 110--114.
+
+\bibitem{nizamuddin2019decentralized}
+N. Nizamuddin, K. Salah, M. A. Azad, J. Arshad, and M. Rehman, ``Decentralized document version control using Ethereum blockchain and IPFS,'' \textit{Comput. Electr. Eng.}, vol. 76, pp. 183--197, Jun. 2019.
+
+\bibitem{chen2019blockchain}
+G. Chen et al., ``A blockchain-based IoT data management approach using IPFS,'' in \textit{Proc. IEEE Int. Conf. Smart Internet of Things (SmartIoT)}, 2019.
+
+\bibitem{peng2024efficient}
+W. Peng, T. Lu, W. Peng, and Z. Wang, ``An efficient blockchain-based framework for file sharing,'' \textit{Sci. Rep.}, vol. 14, no. 1, Art. no. 18263, Aug. 2024.
+
+\bibitem{naik2024decentralized}
+A. Naik, S. Bhatt, and R. Pandya, ``Decentralized file management using blockchain and IPFS with AES-256 encryption,'' \textit{Int. J. Emerg. Technol. Innov. Eng.}, vol. 10, no. 3, pp. 112--121, 2024.
+
+\bibitem{zhang2017iot}
+Y. Zhang and J. Wen, ``The IoT electric business model: Using blockchain technology for the Internet of Things,'' \textit{Peer-to-Peer Netw. Appl.}, vol. 10, no. 4, pp. 983--994, 2017.
+
+\bibitem{azaria2016medrec}
+A. Azaria, A. Ekblaw, T. Vieira, and A. Lippman, ``MedRec: Using blockchain for medical data access and permission management,'' in \textit{Proc. Int. Conf. Open and Big Data (OBD)}, Vienna, 2016, pp. 25--30.
+
+\bibitem{kalapaaking2022blockchain}
+A. P. Kalapaaking, I. Khalil, and M. S. Rahman, ``Blockchain-based access control for secure smart industry management systems,'' in \textit{Proc. Int. Conf. Network System Security (NSS)}, 2022, pp. 609--621.
+
+\bibitem{hao2023blockchain}
+X. Hao, W. Ren, Y. Fei, T. Zhu, and K. K. R. Choo, ``A blockchain-based cross-domain and autonomous access control scheme for Internet of Things,'' \textit{IEEE Trans. Serv. Comput.}, vol. 16, no. 2, pp. 773--786, Mar.--Apr. 2023.
+
+\bibitem{wang2005break}
+X. Wang and H. Yu, ``How to break MD5 and other hash functions,'' in \textit{Proc. EUROCRYPT}, Aarhus, Denmark, 2005, pp. 19--35.
+
+\bibitem{bertoni2013keccak}
+G. Bertoni, J. Daemen, M. Peeters, and G. Van Assche, ``Keccak,'' in \textit{Proc. EUROCRYPT 2013}, Athens, Greece, 2013.
+
+\bibitem{shamir1979share}
+A. Shamir, ``How to share a secret,'' \textit{Commun. ACM}, vol. 22, no. 11, pp. 612--613, Nov. 1979.
+
+\bibitem{bdvsrepo}
+M. Jethwa et al., ``Blockchain Document Verification System (BDVS) --- reference implementation,'' GitHub repository, 2026. [Online]. Available: \url{https://github.com/Meet-jethwa/Blockchain-Document-Verification-System}
+
+\end{thebibliography}
+
+\appendices
+\section{System Workflow Screenshots}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig3.jpg}
+\caption{Upload Document interface --- user selects a file before clicking Upload.}
+\label{fig:upload-document}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig4.jpg}
+\caption{Wallet transaction confirmation prompt during document registration.}
+\label{fig:metamask-transaction}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig5.jpg}
+\caption{Post-confirmation state: document digest recorded on-chain, transaction confirmed at block 10171263 on the deployment testnet.}
+\label{fig:successful-registration}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig6.jpg}
+\caption{My Documents panel listing all digests registered by the currently connected wallet.}
+\label{fig:my-documents}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig7.jpg}
+\caption{Per-document grant/revoke controls; viewer wallet address is specified before invoking the corresponding capability.}
+\label{fig:grant-revoke-controls}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{images/fig8.jpg}
+\caption{Hash Verified panel confirming digest match between the downloaded file and the on-chain registration record; owner wallet, registration timestamp, and both digest values are displayed.}
+\label{fig:verified-download}
+\end{figure}
+
+\end{document}
