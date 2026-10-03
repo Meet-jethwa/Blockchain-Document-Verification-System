@@ -289,7 +289,10 @@ export async function runConcurrentBenchmark() {
 }
 
 // Auto-run when executed directly
-runConcurrentBenchmark().catch(err => {
-  console.error('[benchmark_concurrent] FATAL:', err);
-  process.exit(1);
-});
+if (process.argv[1] && process.argv[1].endsWith('benchmark_concurrent.js')) {
+  runConcurrentBenchmark().catch(err => {
+    console.error('[benchmark_concurrent] FATAL:', err);
+    process.exit(1);
+  });
+}
+
