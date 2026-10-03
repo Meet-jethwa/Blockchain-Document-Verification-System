@@ -3,7 +3,7 @@ import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
 import { fetchDocuments, fetchProfile, fetchSharedDocuments, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
-import { signAuthHeaders, deriveWalletMasterKey, encryptFileClient, decryptFileClient } from './clientCrypto'
+import { signAuthHeaders, deriveWalletMasterKey, deriveDocumentKey, encryptFileClient, decryptFileClient, wrapKeyForGrantee, unwrapKeyAsGrantee, publishP256PublicKey, type WrappedGranteeKey } from './clientCrypto'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -427,6 +427,27 @@ function App() {
     return health.contractAddress
   }
 
+  /**
+   * Publish this wallet's deterministic P-256 public key to the backend
+   * (POST /api/users/:address/p256-pubkey) so that document owners can wrap
+   * AES keys for us without needing our live Signer.  Called once per wallet
+   * connect; silently swallowed if it fails.
+   */
+  async function ensureP256KeyPublished(signer: ethers.Signer, address: string) {
+    try {
+      const authHeaders = await signAuthHeaders(signer, address, BACKEND_BASE_URL)
+      const pubKeyPayload = await publishP256PublicKey(signer, address)
+      await fetch(resolveUrl(`/api/users/${address}/p256-pubkey`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(pubKeyPayload),
+      })
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[P256] Failed to publish grantee public key:', e)
+    }
+  }
+
   async function connectWallet() {
     const ethereum = window.ethereum
     if (!ethereum) {
@@ -439,6 +460,14 @@ function App() {
       await syncWalletContext()
       setActivePage('dashboard')
       pushToast('Wallet connected', shortAddr(accounts?.[0] ?? null), 'success')
+      // Register this wallet's P-256 public key so owners can share docs with us.
+      // Fire-and-forget: non-fatal if backend is down.
+      const address = accounts?.[0]
+      if (address) {
+        const provider = new ethers.BrowserProvider(ethereum)
+        const signer = await provider.getSigner()
+        void ensureP256KeyPublished(signer, address)
+      }
     } catch (error) {
       pushToast('Wallet connection failed', error instanceof Error ? error.message : String(error), 'error')
     } finally {
@@ -630,10 +659,38 @@ function App() {
       const plainHash = await extractHash(uploadFile)
       setUploadHash(plainHash)
 
-      // B5: Derive document-bound key (Sign: "BDVS Encryption Key Generation: <addr>:<hash>") and encrypt file entirely in browser
+      // §IV-B + §IV-C: Use deriveDocumentKey() — a fresh, *extractable* random AES-GCM-256 key
+      // per document — instead of the deterministic wallet-derived key.
+      //
+      // Rationale:
+      //   • Extractable is required so the key can be AES-KW wrapped for grantees.
+      //   • We immediately self-wrap the owner's copy (below) so the owner can
+      //     always recover the AES key from their wallet P-256 key, without relying
+      //     on the in-memory CryptoKey object surviving beyond this function.
+      //   • Documents that are never shared are functionally identical to the old path
+      //     (random per-document key + IV), but now forward-compatible with sharing.
+      setUploadMessage('Generating document encryption key and self-wrapping for owner…')
+      const docKey = await deriveDocumentKey()
+
+      // Self-wrap the document key for the owner using the owner's own P-256 key.
+      // If the publish step fails we fall back gracefully — the key is not lost yet
+      // (still in memory for the duration of this function).
+      let ownerWrappedKey: WrappedGranteeKey | null = null
+      try {
+        // Ensure owner's P-256 key is published (idempotent; no-op if already done)
+        await ensureP256KeyPublished(signer, activeWallet)
+        const ownerPubRes = await fetch(resolveUrl(`/api/users/${activeWallet}/p256-pubkey`))
+        if (ownerPubRes.ok) {
+          const { spkiHex } = await ownerPubRes.json() as { spkiHex: string }
+          ownerWrappedKey = await wrapKeyForGrantee(docKey, spkiHex)
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[upload] Owner self-wrap failed — document is still encrypted but sharing will be unavailable:', e)
+      }
+
       setUploadMessage('Encrypting file client-side with document-bound key…')
-      const masterKey = await deriveWalletMasterKey(signer, activeWallet, plainHash)
-      const encrypted = await encryptFileClient(uploadFile, masterKey)
+      const encrypted = await encryptFileClient(uploadFile, docKey)
 
       // Pack payload [12-byte IV][ciphertext][16-byte authTag] into a Blob for upload
       const combined = new Uint8Array(encrypted.iv.length + encrypted.ciphertext.length + encrypted.authTag.length)
@@ -654,6 +711,10 @@ function App() {
       formData.append('mimetype', uploadFile.type || 'application/octet-stream')
       formData.append('originalSize', String(uploadFile.size))    // pre-encryption size
       formData.append('alg', encrypted.alg)                       // G1: algorithm label
+      if (ownerWrappedKey) {
+        // Persist the owner's wrapped copy so the download path can unwrap via their P-256 key
+        formData.append('ownerWrappedKey', JSON.stringify(ownerWrappedKey))
+      }
       // 12-byte IV is prepended to ciphertext file — relay stores raw blob content-blindly
       // (in a production system, wrap the IV encrypted under the master key and store alongside)
 
@@ -768,57 +829,103 @@ function App() {
         // Direct match: downloaded bytes already match the registered digest (e.g. legacy document)
         plaintextBytes = encryptedBytes
       } else {
-        // B6: Decrypt entirely in browser using wallet-derived key
-        pushToast('Decrypting…', 'Deriving your wallet key for decryption.', 'info')
-        // Try document-bound key derivation first; fallback to wallet-scoped key if legacy
-        const masterKey = await deriveWalletMasterKey(signer, walletAddress, hash)
+      // B6: Decrypt entirely in browser using the appropriate key
+      pushToast('Decrypting…', 'Deriving your wallet key for decryption.', 'info')
 
-        const IV_LENGTH = 12
-        const TAG_LENGTH = 16
+      // Resolve domain params for KDF domain separation
+      const effectiveChainId   = String(chainId ?? backendChainId ?? 'unknown')
+      const effectiveContract  = contractAddress ?? undefined
 
-        let plaintextBuffer: ArrayBuffer | null = null
+      const IV_LENGTH = 12
+      const TAG_LENGTH = 16
+
+      let plaintextBuffer: ArrayBuffer | null = null
+
+      // §IV-C: Try grantee unwrap path first.
+      // The download route already verified on-chain + local share index access;
+      // here we additionally check whether this wallet is the registered owner.
+      const authHeadersForKey = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
+      const wrappedKeyRes = await fetch(
+        resolveUrl(`/api/documents/${hash}/wrapped-key?viewer=${walletAddress}`),
+        { headers: authHeadersForKey as Record<string, string> }
+      ).catch(() => null)
+
+      if (wrappedKeyRes?.ok) {
+        // We have a wrapped copy: either owner self-wrap or grantee wrap
+        const { wrappedKey: wrapped, isOwnerKey } =
+          await wrappedKeyRes.json() as { wrappedKey: WrappedGranteeKey; isOwnerKey: boolean }
+        try {
+          const aesKey = await unwrapKeyAsGrantee(signer, walletAddress, wrapped)
+          if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
+            const iv         = encryptedBytes.slice(0, IV_LENGTH)
+            const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
+            const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+            plaintextBuffer  = await decryptFileClient(ciphertext, iv, authTag, aesKey)
+          }
+          if (isOwnerKey) {
+            // eslint-disable-next-line no-console
+            console.debug('[download] Decrypted via owner self-wrap')
+          } else {
+            // eslint-disable-next-line no-console
+            console.debug('[download] Decrypted via grantee ECIES unwrap')
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[download] Wrapped-key unwrap failed; falling back to wallet-signature derivation:', e)
+        }
+      }
+
+      // Legacy fallback: wallet-derived key (deterministic, no wrapping).
+      // Used for documents uploaded before the deriveDocumentKey() migration,
+      // or when the wrapped-key endpoint returns 404.
+      if (!plaintextBuffer) {
+        // Domain-separated derive (§IV-B): bind to chainId + contractAddress
+        const masterKey = await deriveWalletMasterKey(signer, walletAddress, hash, effectiveChainId, effectiveContract)
 
         // Attempt 1: Standard layout [12-byte IV][ciphertext][16-byte authTag] with document-bound key
         if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
-          const iv = encryptedBytes.slice(0, IV_LENGTH)
+          const iv         = encryptedBytes.slice(0, IV_LENGTH)
           const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
-          const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+          const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
           try {
             plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, masterKey)
           } catch {
-            // Attempt 2: Standard layout with legacy wallet-only master key
+            // Attempt 2: legacy wallet-only master key (no document hash binding)
             try {
-              const legacyKey = await deriveWalletMasterKey(signer, walletAddress)
+              const legacyKey = await deriveWalletMasterKey(signer, walletAddress, undefined, effectiveChainId, effectiveContract)
               plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, legacyKey)
             } catch {
-              // pass to fallback layout
+              // Attempt 3: pre-domain-separation (no chain/contract) — oldest documents
+              try {
+                const oldestKey = await deriveWalletMasterKey(signer, walletAddress, hash)
+                plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, oldestKey)
+              } catch { /* pass to legacy layout */ }
             }
           }
         }
 
-        // Attempt 3: Legacy layout [ciphertext][16-byte authTag] with zero-IV
+        // Attempt 4: Legacy layout [ciphertext][16-byte authTag] with zero-IV
         if (!plaintextBuffer && encryptedBytes.length >= TAG_LENGTH) {
           const ciphertext = encryptedBytes.slice(0, encryptedBytes.length - TAG_LENGTH)
-          const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
-          const zeroIv = new Uint8Array(12)
+          const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+          const zeroIv     = new Uint8Array(12)
           try {
             plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, masterKey)
           } catch {
             try {
               const legacyKey = await deriveWalletMasterKey(signer, walletAddress)
               plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, legacyKey)
-            } catch {
-              // all attempts failed
-            }
+            } catch { /* all attempts failed */ }
           }
         }
+      }
 
-        if (!plaintextBuffer) {
-          throw new Error(
-            'Decryption failed. Ensure you are using the authorized wallet that owns or has been granted viewer access to this document.'
-          )
-        }
-        plaintextBytes = new Uint8Array(plaintextBuffer)
+      if (!plaintextBuffer) {
+        throw new Error(
+          'Decryption failed. Ensure you are using the authorized wallet that owns or has been granted viewer access to this document.'
+        )
+      }
+      plaintextBytes = new Uint8Array(plaintextBuffer)
       }
 
       // B6: Compute keccak256 of decrypted plaintext — client-side integrity check
@@ -906,6 +1013,46 @@ function App() {
       const tx = await contract.grantViewer(shareDialog.doc.hash, shareDialog.viewer)
       pushToast('Share pending', `${shortAddr(shareDialog.viewer)} will receive access after confirmation.`, 'info')
       await tx.wait()
+
+      // §IV-C: Wrap the document AES key for the grantee.
+      // The grantee must have published their P-256 public key (done on their first wallet connect).
+      let wrappedGranteeKey: WrappedGranteeKey | undefined
+      const granteeAddr = shareDialog.viewer.toLowerCase()
+      try {
+        const pubKeyRes = await fetch(resolveUrl(`/api/users/${granteeAddr}/p256-pubkey`))
+        if (pubKeyRes.ok) {
+          const { spkiHex } = await pubKeyRes.json() as { spkiHex: string }
+          // Re-derive the owner's copy of the document AES key by unwrapping the owner's self-wrap.
+          // Fetch the owner's wrapped key from the backend share index.
+          const ownerKeyRes = await fetch(resolveUrl(`/api/documents/${shareDialog.doc.hash}/wrapped-key?viewer=${walletAddress}`), {
+            headers: (await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)) as Record<string, string>,
+          })
+          if (ownerKeyRes.ok) {
+            const { wrappedKey: ownerWrap } = await ownerKeyRes.json() as { wrappedKey: WrappedGranteeKey }
+            const docAesKey = await unwrapKeyAsGrantee(signer, walletAddress, ownerWrap)
+            wrappedGranteeKey = await wrapKeyForGrantee(docAesKey, spkiHex)
+          } else {
+            pushToast(
+              'Key wrap unavailable',
+              'Could not retrieve owner key copy — grantee will not be able to decrypt. ' +
+              'Re-upload the document to enable sharing.',
+              'warning'
+            )
+          }
+        } else if (pubKeyRes.status === 404) {
+          pushToast(
+            'Grantee not registered',
+            `${shortAddr(granteeAddr)} hasn't connected to BDVS yet and has no encryption key published. ` +
+            'They need to connect their wallet first — then you can re-share.',
+            'warning'
+          )
+        }
+      } catch (wrapErr) {
+        // eslint-disable-next-line no-console
+        console.warn('[share] Key wrap failed — on-chain access is still granted:', wrapErr)
+        pushToast('Key wrap failed', 'Grantee has on-chain access but may not be able to decrypt. Check console.', 'warning')
+      }
+
       try {
         const authHeaders = await signAuthHeaders(signer, walletAddress, BACKEND_BASE_URL)
         await recordSharedDocument(
@@ -918,6 +1065,7 @@ function App() {
             cid: shareDialog.doc.cid,
           },
           authHeaders,
+          wrappedGranteeKey,
         )
       } catch (recordError) {
         // Non-fatal: on-chain sharing succeeded, local share index can be refreshed later.

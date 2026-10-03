@@ -914,6 +914,13 @@ async function handleUpload(req, res) {
     const clientOrigSize = Number.isFinite(Number(req.body?.originalSize)) ? Number(req.body.originalSize) : size;
     const clientAlg      = typeof req.body?.alg      === "string" ? req.body.alg.trim()      : "aes-256-gcm";
 
+    // §IV-C: Optional owner self-wrapped key (JSON-encoded WrappedGranteeKey).
+    // The server treats it as an opaque JSON blob — it never has access to the raw AES key.
+    let ownerWrappedKey = null;
+    if (typeof req.body?.ownerWrappedKey === "string" && req.body.ownerWrappedKey.length > 0) {
+      try { ownerWrappedKey = JSON.parse(req.body.ownerWrappedKey); } catch { /* ignore malformed */ }
+    }
+
     const fileMeta = { name: clientName, mimetype: clientMimetype, size: clientOrigSize };
 
     // Duplicate check — same as before
@@ -989,6 +996,9 @@ async function handleUpload(req, res) {
       },
       file: fileMeta,
       access: "owned",
+      // §IV-C: Owner's ECIES-wrapped copy of the AES-GCM document key.
+      // Stored opaquely — server never sees the raw key.
+      ...(ownerWrappedKey ? { ownerWrappedKey } : {}),
     });
 
     return res.json({
@@ -1410,6 +1420,15 @@ app.post("/api/shared-record", async (req, res) => {
       ? targetViewer
       : callerAddress;
 
+    // §IV-C: Optional grantee-wrapped AES key (WrappedGranteeKey JSON).
+    // Stored opaquely; server never decrypts it.
+    const wrappedGranteeKey = body.wrappedGranteeKey
+      && typeof body.wrappedGranteeKey === "object"
+      && typeof body.wrappedGranteeKey.ephemeralPub === "string"
+      && typeof body.wrappedGranteeKey.wrappedKey === "string"
+      ? body.wrappedGranteeKey
+      : null;
+
     const record = await putSharedDocument(viewerAddress, {
       hash,
       name: name || `Document ${shortHash(hash)}`,
@@ -1419,12 +1438,101 @@ app.post("/api/shared-record", async (req, res) => {
       status: "Registered",
       cid,
       access: "shared",
+      // §IV-C: Grantee's ECIES-wrapped AES key (opaque blob; never decrypted by server)
+      ...(wrappedGranteeKey ? { wrappedGranteeKey } : {}),
     });
 
     return res.json({ shared: record });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("/api/shared-record POST error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/documents/:hash/wrapped-key — fetch the ECIES-wrapped document AES key (§IV-C)
+ *
+ * Query params:
+ *   viewer (required) — the wallet address requesting the key
+ *
+ * Auth: requires valid EIP-191 signed headers (the authenticated address must equal viewer)
+ *
+ * Returns:
+ *   { wrappedKey: WrappedGranteeKey, isOwnerKey: boolean }
+ *
+ * Access policy:
+ *   - If viewer is the document owner: return ownerWrappedKey from documentIndex
+ *   - If viewer is an authorized grantee: return wrappedGranteeKey from sharedStore
+ *   - Otherwise: 403
+ *
+ * 404 if the document has no wrapped key stored (uploaded before §IV-C was deployed).
+ */
+app.get("/api/documents/:hash/wrapped-key", async (req, res) => {
+  try {
+    const viewerAddress = verifyAuthHeaders(req, res);
+    if (!viewerAddress) return;
+
+    const { hash } = req.params;
+    if (typeof hash !== "string" || !hash.startsWith("0x") || hash.length !== 66) {
+      return res.status(400).json({ error: "Invalid hash; expected 0x + 64 hex chars" });
+    }
+
+    // Optional ?viewer= query param for cross-checking; fall back to authed address
+    const queryViewer = typeof req.query?.viewer === "string"
+      ? req.query.viewer.toLowerCase()
+      : viewerAddress;
+    if (queryViewer !== viewerAddress) {
+      return res.status(403).json({ error: "viewer param must match authenticated wallet address" });
+    }
+
+    // Check on-chain ownership
+    const onChainMeta = await chain.getDocumentMeta(hash).catch(() => null);
+    const isOwner = onChainMeta
+      ? String(onChainMeta.owner).toLowerCase() === viewerAddress
+      : false;
+
+    if (isOwner) {
+      // Return owner's self-wrapped copy
+      const storedDoc = await getStoredDocument(hash).catch(() => null);
+      if (!storedDoc?.ownerWrappedKey) {
+        return res.status(404).json({
+          error:
+            "No owner wrapped key found. The document was uploaded before key-wrapping was " +
+            "introduced. Re-upload to enable sharing.",
+        });
+      }
+      return res.json({ wrappedKey: storedDoc.ownerWrappedKey, isOwnerKey: true });
+    }
+
+    // Check grantee share index
+    const sharedDocs = await listSharedStoreDocuments(viewerAddress).catch(() => []);
+    const sharedEntry = sharedDocs.find(
+      (doc) => String(doc?.hash || "").toLowerCase() === hash.toLowerCase()
+    );
+    if (sharedEntry?.wrappedGranteeKey) {
+      return res.json({ wrappedKey: sharedEntry.wrappedGranteeKey, isOwnerKey: false });
+    }
+
+    // Not owner, no grantee key — check on-chain permission for a better error
+    let hasOnChainAccess = false;
+    try {
+      hasOnChainAccess = await chain.canViewDocument(hash, viewerAddress);
+    } catch { /* canViewDocument not implemented */ }
+
+    if (hasOnChainAccess) {
+      return res.status(404).json({
+        error:
+          "You have on-chain access but no encrypted key has been wrapped for your wallet yet. " +
+          "Ask the document owner to re-share the document so a key can be generated for you.",
+      });
+    }
+
+    return res.status(403).json({ error: "Not authorized to access this document's key" });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("/api/documents/:hash/wrapped-key GET error:", err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }

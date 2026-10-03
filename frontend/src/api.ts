@@ -1,3 +1,5 @@
+import { type WrappedGranteeKey } from './clientCrypto'
+
 export type RegisterResponse = {
   message?: string
   hash: string
@@ -93,6 +95,7 @@ export async function recordSharedDocument(
   viewerAddress: string,
   document: Pick<DocumentSummary, 'hash' | 'name' | 'owner' | 'createdAt' | 'cid'>,
   authHeaders?: Record<string, string>,
+  wrappedGranteeKey?: WrappedGranteeKey,
 ): Promise<{ shared: DocumentSummary }> {
   return requestJson<{ shared: DocumentSummary }>('/api/shared-record', {
     method: 'POST',
@@ -103,6 +106,7 @@ export async function recordSharedDocument(
     body: JSON.stringify({
       ...document,
       viewerAddress,
+      ...(wrappedGranteeKey ? { wrappedGranteeKey } : {}),
     }),
   })
 }
