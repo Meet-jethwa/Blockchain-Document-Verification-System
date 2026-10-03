@@ -432,19 +432,28 @@ function App() {
    * (POST /api/users/:address/p256-pubkey) so that document owners can wrap
    * AES keys for us without needing our live Signer.  Called once per wallet
    * connect; silently swallowed if it fails.
+   *
+   * Throws if the backend returns a non-2xx response so callers that need the
+   * key published (e.g. the upload flow) can catch and surface a clear error.
    */
   async function ensureP256KeyPublished(signer: ethers.Signer, address: string) {
     try {
       const authHeaders = await signAuthHeaders(signer, address, BACKEND_BASE_URL)
       const pubKeyPayload = await publishP256PublicKey(signer, address)
-      await fetch(resolveUrl(`/api/users/${address}/p256-pubkey`), {
+      const res = await fetch(resolveUrl(`/api/users/${address}/p256-pubkey`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify(pubKeyPayload),
       })
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new Error(`Server returned ${res.status} when publishing P-256 key: ${body}`)
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[P256] Failed to publish grantee public key:', e)
+      // Re-throw so the upload path can treat this as a hard failure
+      throw e
     }
   }
 
@@ -466,7 +475,10 @@ function App() {
       if (address) {
         const provider = new ethers.BrowserProvider(ethereum)
         const signer = await provider.getSigner()
-        void ensureP256KeyPublished(signer, address)
+        void ensureP256KeyPublished(signer, address).catch((e) => {
+          // eslint-disable-next-line no-console
+          console.warn('[connectWallet] P-256 key publish failed (non-fatal):', e)
+        })
       }
     } catch (error) {
       pushToast('Wallet connection failed', error instanceof Error ? error.message : String(error), 'error')
@@ -659,34 +671,35 @@ function App() {
       const plainHash = await extractHash(uploadFile)
       setUploadHash(plainHash)
 
-      // §IV-B + §IV-C: Use deriveDocumentKey() — a fresh, *extractable* random AES-GCM-256 key
-      // per document — instead of the deterministic wallet-derived key.
+      // §IV-B + §IV-C: Derive a fresh, *extractable* random AES-GCM-256 key per document.
       //
-      // Rationale:
-      //   • Extractable is required so the key can be AES-KW wrapped for grantees.
-      //   • We immediately self-wrap the owner's copy (below) so the owner can
-      //     always recover the AES key from their wallet P-256 key, without relying
-      //     on the in-memory CryptoKey object surviving beyond this function.
-      //   • Documents that are never shared are functionally identical to the old path
-      //     (random per-document key + IV), but now forward-compatible with sharing.
-      setUploadMessage('Generating document encryption key and self-wrapping for owner…')
+      // IMPORTANT: docKey comes from crypto.subtle.generateKey() — it is NOT deterministically
+      // re-derivable from the wallet. Once this CryptoKey object falls out of scope it is gone
+      // forever. The owner's wrapped copy MUST be successfully stored before we proceed, or the
+      // document becomes permanently undecryptable. This is therefore a HARD FAILURE, not a
+      // soft fallback — we abort the entire upload if the self-wrap cannot be established.
+      setUploadMessage('Generating document encryption key and wrapping for your wallet…')
       const docKey = await deriveDocumentKey()
 
-      // Self-wrap the document key for the owner using the owner's own P-256 key.
-      // If the publish step fails we fall back gracefully — the key is not lost yet
-      // (still in memory for the duration of this function).
-      let ownerWrappedKey: WrappedGranteeKey | null = null
+      // Phase 1: publish owner's P-256 public key (idempotent; fast no-op if already done)
+      // Phase 2: fetch the published SPKI hex back and wrap docKey under it
+      // Both phases must succeed. If either fails we throw — encryptFileClient is never called.
+      let ownerWrappedKey: WrappedGranteeKey
       try {
-        // Ensure owner's P-256 key is published (idempotent; no-op if already done)
         await ensureP256KeyPublished(signer, activeWallet)
         const ownerPubRes = await fetch(resolveUrl(`/api/users/${activeWallet}/p256-pubkey`))
-        if (ownerPubRes.ok) {
-          const { spkiHex } = await ownerPubRes.json() as { spkiHex: string }
-          ownerWrappedKey = await wrapKeyForGrantee(docKey, spkiHex)
+        if (!ownerPubRes.ok) {
+          throw new Error(`Could not retrieve your encryption key from the server (${ownerPubRes.status}). Please try again.`)
         }
+        const { spkiHex } = await ownerPubRes.json() as { spkiHex: string }
+        ownerWrappedKey = await wrapKeyForGrantee(docKey, spkiHex)
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[upload] Owner self-wrap failed — document is still encrypted but sharing will be unavailable:', e)
+        // Surface a clear, actionable error. Do NOT proceed with encryption.
+        throw new Error(
+          'Could not secure the encryption key for your wallet — the document was NOT uploaded. ' +
+          'Please check your connection and try again. ' +
+          `(Reason: ${e instanceof Error ? e.message : String(e)})`
+        )
       }
 
       setUploadMessage('Encrypting file client-side with document-bound key…')

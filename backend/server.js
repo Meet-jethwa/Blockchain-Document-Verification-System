@@ -1506,12 +1506,34 @@ app.get("/api/documents/:hash/wrapped-key", async (req, res) => {
       return res.json({ wrappedKey: storedDoc.ownerWrappedKey, isOwnerKey: true });
     }
 
-    // Check grantee share index
+    // Check grantee share index AND re-verify on-chain permission.
+    // We check the local index first (fast) to confirm a wrapped key exists,
+    // then re-validate canViewDocument on-chain so a revoked grantee whose
+    // share record is still cached cannot retrieve their wrapped key.
     const sharedDocs = await listSharedStoreDocuments(viewerAddress).catch(() => []);
     const sharedEntry = sharedDocs.find(
       (doc) => String(doc?.hash || "").toLowerCase() === hash.toLowerCase()
     );
     if (sharedEntry?.wrappedGranteeKey) {
+      // Re-check on-chain access before serving the key
+      let granteeStillAuthorized = false;
+      try {
+        granteeStillAuthorized = await withTimeout(
+          chain.canViewDocument(hash, viewerAddress),
+          8000,
+          "canViewDocument"
+        );
+      } catch {
+        // canViewDocument unavailable — fall back to local index (consistent with download route)
+        granteeStillAuthorized = true;
+        // eslint-disable-next-line no-console
+        console.warn("canViewDocument unavailable in wrapped-key endpoint; trusting local share index");
+      }
+      if (!granteeStillAuthorized) {
+        return res.status(403).json({
+          error: "Your access to this document has been revoked.",
+        });
+      }
       return res.json({ wrappedKey: sharedEntry.wrappedGranteeKey, isOwnerKey: false });
     }
 
