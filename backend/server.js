@@ -677,16 +677,40 @@ app.post("/api/users/:address/p256-pubkey", async (req, res) => {
       });
     }
 
-    const { spkiHex, derivedAt } = req.body ?? {};
+    const { spkiHex, derivedAt, spkiSignature } = req.body ?? {};
     if (typeof spkiHex !== "string" || !/^[0-9a-f]+$/i.test(spkiHex) || spkiHex.length < 100) {
-      return res.status(400).json({ error: "spkiHex must be a non-empty hex string (≥50 bytes SPKI)." });
+      return res.status(400).json({ error: "spkiHex must be a non-empty hex string (\u226550 bytes SPKI)." });
+    }
+
+    // §IV-C Self-authentication: verify the SPKI signature against the wallet
+    // address before storing.  This ensures the server cannot forward a
+    // substituted key — the signature is over the SPKI bytes themselves,
+    // signed by the wallet's secp256k1 key (personal_sign / EIP-191).
+    if (typeof spkiSignature !== "string" || spkiSignature.length < 130) {
+      return res.status(400).json({
+        error:
+          "spkiSignature is required (EIP-191 personal_sign of \"BDVS P256 SPKI: <spkiHex>\"). " +
+          "Call publishP256PublicKey() which produces the signature automatically.",
+      });
+    }
+    try {
+      const spkiMessage = `BDVS P256 SPKI: ${spkiHex.toLowerCase()}`;
+      const recovered = ethers.verifyMessage(spkiMessage, spkiSignature);
+      if (recovered.toLowerCase() !== paramAddr) {
+        return res.status(400).json({
+          error: "spkiSignature ecrecover mismatch: the signature was not produced by the claimed wallet address.",
+        });
+      }
+    } catch {
+      return res.status(400).json({ error: "Malformed spkiSignature; ecrecover failed." });
     }
 
     _p256PubKeyStore.set(paramAddr, {
-      address:   paramAddr,
-      spkiHex:   spkiHex.toLowerCase(),
-      derivedAt: typeof derivedAt === "number" ? derivedAt : Date.now(),
-      updatedAt: Date.now(),
+      address:       paramAddr,
+      spkiHex:       spkiHex.toLowerCase(),
+      spkiSignature, // stored so fetchers can verify offline without trusting the relay
+      derivedAt:     typeof derivedAt === "number" ? derivedAt : Date.now(),
+      updatedAt:     Date.now(),
     });
 
     return res.status(201).json({ ok: true, address: paramAddr });
@@ -1524,10 +1548,14 @@ app.get("/api/documents/:hash/wrapped-key", async (req, res) => {
           "canViewDocument"
         );
       } catch {
-        // canViewDocument unavailable — fall back to local index (consistent with download route)
-        granteeStillAuthorized = true;
+        // canViewDocument unavailable — FAIL CLOSED.
+        // A transient RPC failure must not admit a potentially-revoked grantee.
+        // (Contrast with the /download route, which falls back to the local share
+        //  index for availability reasons; wrapped-key exposure has a higher
+        //  security bar because it hands out persistent key material.)
+        granteeStillAuthorized = false;
         // eslint-disable-next-line no-console
-        console.warn("canViewDocument unavailable in wrapped-key endpoint; trusting local share index");
+        console.warn("canViewDocument unavailable in wrapped-key endpoint; denying grantee (fail-closed)");
       }
       if (!granteeStillAuthorized) {
         return res.status(403).json({

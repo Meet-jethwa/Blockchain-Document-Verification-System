@@ -5,9 +5,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { performance } from 'node:perf_hooks';
+import { sha3_256 as jsSha3_256 } from 'js-sha3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Attempt to load native keccak bindings (keccak npm package, C extension).
+// If the native addon is unavailable (e.g., no build tools), we fall back to
+// a null implementation and skip that row rather than crashing the benchmark.
+let keccakNative = null;
+try {
+  const keccakModule = await import('keccak');
+  const keccakFn = keccakModule.default ?? keccakModule;
+  // smoke-test: keccak('keccak256').update(Buffer.alloc(0)).digest() must work
+  keccakFn('keccak256').update(Buffer.alloc(1)).digest();
+  keccakNative = keccakFn;
+} catch {
+  // native bindings unavailable — will be omitted from results table
+}
+
+
 
 export function getSystemInfo() {
   const cpus = os.cpus();
@@ -121,10 +138,23 @@ export function runHashBenchmarks(options = {}) {
       fn: (buf) => crypto.createHash('blake2b512').update(buf).digest('hex').substring(0, 64)
     },
     {
-      name: 'Keccak-256 (ethers)',
+      // Baseline: ethers.js keccak256 — hex/Buffer marshalling overhead is included
+      name: 'Keccak-256 (ethers.js — includes hex/Buffer marshal)',
       outputBits: 256,
       fn: (buf) => ethers.keccak256(buf)
-    }
+    },
+    {
+      // js-sha3: pure-JS implementation, no marshalling overhead
+      name: 'Keccak-256 (js-sha3 — pure JS, no marshal)',
+      outputBits: 256,
+      fn: (buf) => jsSha3_256(buf)
+    },
+    // Native C bindings: lowest possible overhead for the Keccak permutation in Node.js
+    ...(keccakNative ? [{
+      name: 'Keccak-256 (keccak native C bindings)',
+      outputBits: 256,
+      fn: (buf) => keccakNative('keccak256').update(buf).digest('hex')
+    }] : []),
   ];
 
   const resultsByPayload = [];

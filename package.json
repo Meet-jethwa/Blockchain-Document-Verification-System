@@ -20,7 +20,9 @@
     "@nomicfoundation/hardhat-ethers": "^4.0.3",
     "dotenv": "^17.2.3",
     "ethers": "^6.16.0",
-    "hardhat": "^3.1.0"
+    "hardhat": "^3.1.0",
+    "js-sha3": "^0.13.0",
+    "keccak": "^3.0.4"
   },
   "dependencies": {
     "axios": "^1.12.2",

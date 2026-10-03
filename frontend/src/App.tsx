@@ -3,7 +3,7 @@ import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
 import { fetchDocuments, fetchProfile, fetchSharedDocuments, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
-import { signAuthHeaders, deriveWalletMasterKey, deriveDocumentKey, encryptFileClient, decryptFileClient, wrapKeyForGrantee, unwrapKeyAsGrantee, publishP256PublicKey, type WrappedGranteeKey } from './clientCrypto'
+import { signAuthHeaders, deriveWalletMasterKey, deriveDocumentKey, encryptFileClient, decryptFileClient, wrapKeyForGrantee, unwrapKeyAsGrantee, publishP256PublicKey, ecrecoverSpkiSignature, type WrappedGranteeKey } from './clientCrypto'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -691,7 +691,12 @@ function App() {
         if (!ownerPubRes.ok) {
           throw new Error(`Could not retrieve your encryption key from the server (${ownerPubRes.status}). Please try again.`)
         }
-        const { spkiHex } = await ownerPubRes.json() as { spkiHex: string }
+        const { spkiHex, spkiSignature } = await ownerPubRes.json() as { spkiHex: string; spkiSignature: string }
+        // §IV-C self-authentication: verify the SPKI was genuinely signed by this wallet.
+        // If ecrecover fails or returns a different address, the relay may have substituted the key.
+        if (!ecrecoverSpkiSignature({ address: activeWallet, spkiHex, spkiSignature, derivedAt: 0 })) {
+          throw new Error('Server returned a public key with an invalid signature — possible relay tampering. Aborting upload.')
+        }
         ownerWrappedKey = await wrapKeyForGrantee(docKey, spkiHex)
       } catch (e) {
         // Surface a clear, actionable error. Do NOT proceed with encryption.
@@ -1034,7 +1039,17 @@ function App() {
       try {
         const pubKeyRes = await fetch(resolveUrl(`/api/users/${granteeAddr}/p256-pubkey`))
         if (pubKeyRes.ok) {
-          const { spkiHex } = await pubKeyRes.json() as { spkiHex: string }
+          const { spkiHex, spkiSignature } = await pubKeyRes.json() as { spkiHex: string; spkiSignature: string }
+          // §IV-C self-authentication: verify the grantee's published key was signed by their wallet.
+          // A compromised relay could substitute a different public key here; ecrecover catches that.
+          if (!ecrecoverSpkiSignature({ address: granteeAddr, spkiHex, spkiSignature, derivedAt: 0 })) {
+            pushToast(
+              'Key verification failed',
+              "The grantee's published key has an invalid signature — refusing to wrap. Re-share once they reconnect.",
+              'error'
+            )
+            // Skip the wrap — same treatment as the 404 branch below.
+          } else {
           // Re-derive the owner's copy of the document AES key by unwrapping the owner's self-wrap.
           // Fetch the owner's wrapped key from the backend share index.
           const ownerKeyRes = await fetch(resolveUrl(`/api/documents/${shareDialog.doc.hash}/wrapped-key?viewer=${walletAddress}`), {
@@ -1052,6 +1067,7 @@ function App() {
               'warning'
             )
           }
+          } // end ecrecoverSpkiSignature check
         } else if (pubKeyRes.status === 404) {
           pushToast(
             'Grantee not registered',

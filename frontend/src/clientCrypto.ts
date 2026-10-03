@@ -39,9 +39,17 @@ export type WrappedGranteeKey = {
  * calling wrapKeyForGrantee() — the owner never needs the grantee's Signer.
  */
 export type GranteeP256PubKey = {
-  address: string;       // lowercase Ethereum address
-  spkiHex: string;      // hex-encoded SPKI (uncompressed P-256 public key, 91 bytes)
-  derivedAt: number;    // unix ms timestamp
+  address: string;        // lowercase Ethereum address
+  spkiHex: string;       // hex-encoded SPKI (uncompressed P-256 public key, 91 bytes)
+  derivedAt: number;     // unix ms timestamp
+  /**
+   * EIP-191 personal_sign signature of the SPKI hex string, produced by the
+   * wallet's secp256k1 key.  Lets any fetcher verify the key offline via
+   * ecrecoverSpkiSignature() — no PKI, no on-chain call, no server trust needed.
+   *
+   * Signed message: "BDVS P256 SPKI: <spkiHex>"
+   */
+  spkiSignature: string; // EIP-191 sig of `BDVS P256 SPKI: <spkiHex>`
 };
 
 const KEY_DERIVATION_PROMPT = 'BDVS Encryption Key Generation: ';
@@ -416,11 +424,47 @@ export async function publishP256PublicKey(
   const { publicKey } = await _signerToP256KeyPair(granteeSigner, granteeAddress, 'grantee');
   const spkiBuf = await window.crypto.subtle.exportKey('spki', publicKey);
   const spkiHex = Array.from(new Uint8Array(spkiBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // §IV-C Self-authentication: sign the SPKI hex with the wallet's secp256k1
+  // key so that any fetcher can ecrecover the signer and confirm it matches
+  // the claimed wallet address — entirely without trusting the relay server.
+  //
+  // Signed message (EIP-191 personal_sign):
+  //   "BDVS P256 SPKI: <spkiHex>"
+  //
+  // Verification: see ecrecoverSpkiSignature() below.
+  const spkiSignature = await granteeSigner.signMessage(`BDVS P256 SPKI: ${spkiHex}`);
+
   return {
-    address:   granteeAddress.toLowerCase(),
+    address:        granteeAddress.toLowerCase(),
     spkiHex,
-    derivedAt: Date.now(),
+    derivedAt:      Date.now(),
+    spkiSignature,
   };
+}
+
+/**
+ * Verify that a fetched P-256 SPKI entry was genuinely signed by its claimed
+ * wallet address, without any server involvement.
+ *
+ * Algorithm:
+ *   1. Reconstruct the signed message: "BDVS P256 SPKI: <spkiHex>"
+ *   2. ecrecover the signer from spkiSignature (EIP-191 personal_sign)
+ *   3. Compare the recovered address to entry.address (case-insensitive)
+ *
+ * If this returns false, the key may have been substituted by the relay —
+ * do NOT use it to wrap a document key.
+ *
+ * @param entry - the object returned by GET /api/users/:address/p256-pubkey
+ */
+export function ecrecoverSpkiSignature(entry: GranteeP256PubKey): boolean {
+  try {
+    const message = `BDVS P256 SPKI: ${entry.spkiHex}`;
+    const recovered = ethers.verifyMessage(message, entry.spkiSignature);
+    return recovered.toLowerCase() === entry.address.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 /**

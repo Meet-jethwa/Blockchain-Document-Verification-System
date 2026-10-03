@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-10-03T15:53:14.360Z",
+  "network": {
+    "name": "sepolia",
+    "chainId": "11155111"
+  },
+  "contract": "0xc38a8B5c136EAcF08663F2fC98530D56aEe1aD61",
+  "tolerance": 200,
+  "allMatch": false,
+  "results": [
+    {
+      "op": "registerDocument (1st)",
+      "hardhat": 131765,
+      "live": 190956,
+      "notes": "Cold SSTORE; first document",
+      "delta": 59191,
+      "match": false
+    },
+    {
+      "op": "registerDocument (2nd)",
+      "hardhat": 116465,
+      "live": 190956,
+      "notes": "Warm deployer array; 2nd+ document",
+      "delta": 74491,
+      "match": false
+    },
+    {
+      "op": "registerDocument (3rd)",
+      "hardhat": 116465,
+      "live": 190956,
+      "notes": "Warm deployer array; 2nd+ document",
+      "delta": 74491,
+      "match": false
+    },
+    {
+      "op": "grantViewer",
+      "hardhat": 46913,
+      "live": 56385,
+      "notes": "Cold SSTORE in per-hash viewer mapping",
+      "delta": 9472,
+      "match": false
+    }
+  ]
+}
