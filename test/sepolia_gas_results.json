@@ -1,44 +1,44 @@
 {
-  "timestamp": "2026-10-03T15:53:14.360Z",
+  "timestamp": "2026-10-03T18:16:28.916Z",
   "network": {
     "name": "sepolia",
     "chainId": "11155111"
   },
-  "contract": "0xc38a8B5c136EAcF08663F2fC98530D56aEe1aD61",
+  "contract": "0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3",
   "tolerance": 200,
-  "allMatch": false,
+  "allMatch": true,
   "results": [
     {
       "op": "registerDocument (1st)",
-      "hardhat": 131765,
-      "live": 190956,
-      "notes": "Cold SSTORE; first document",
-      "delta": 59191,
-      "match": false
+      "hardhat": 207825,
+      "live": 207825,
+      "notes": "Cold SSTORE; first document (new struct slot)",
+      "delta": 0,
+      "match": true
     },
     {
       "op": "registerDocument (2nd)",
-      "hardhat": 116465,
-      "live": 190956,
+      "hardhat": 190725,
+      "live": 190725,
       "notes": "Warm deployer array; 2nd+ document",
-      "delta": 74491,
-      "match": false
+      "delta": 0,
+      "match": true
     },
     {
       "op": "registerDocument (3rd)",
-      "hardhat": 116465,
-      "live": 190956,
+      "hardhat": 190725,
+      "live": 190725,
       "notes": "Warm deployer array; 2nd+ document",
-      "delta": 74491,
-      "match": false
+      "delta": 0,
+      "match": true
     },
     {
       "op": "grantViewer",
-      "hardhat": 46913,
-      "live": 56385,
+      "hardhat": 56392,
+      "live": 56380,
       "notes": "Cold SSTORE in per-hash viewer mapping",
-      "delta": 9472,
-      "match": false
+      "delta": -12,
+      "match": true
     }
   ]
 }

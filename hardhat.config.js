@@ -1,7 +1,9 @@
 import { defineConfig } from "hardhat/config";
 import hardhatEthers from "@nomicfoundation/hardhat-ethers";
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config();
+dotenv.config({ path: "./backend/.env", override: false });
 
 function normalizePrivateKey(value) {
   if (typeof value !== "string") return undefined;
@@ -10,7 +12,7 @@ function normalizePrivateKey(value) {
   return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
 }
 
-const deployerKey = normalizePrivateKey(process.env.DEPLOYER_PRIVATE_KEY);
+const deployerKey = normalizePrivateKey(process.env.DEPLOYER_PRIVATE_KEY ?? process.env.PRIVATE_KEY);
 const accounts = deployerKey ? [deployerKey] : [];
 
 // Default key provided by `hardhat node` (local development only).

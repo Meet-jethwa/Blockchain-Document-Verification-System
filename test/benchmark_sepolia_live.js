@@ -47,11 +47,12 @@ const PRIVATE_KEY      = process.env.PRIVATE_KEY ?? '';
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS ?? '';
 
 // Hardhat reference figures from benchmark_gas.js / Table IV in the paper.
-// Update these if the contract bytecode changes.
+// Verified on a fresh in-process Hardhat node, solc 0.8.24, evm target: shanghai.
+// Re-run `npx hardhat run test/run_gas_only.js` after any contract change to update.
 const HARDHAT_REFERENCE = {
-  registerDocument:       { gas: 131_765, notes: 'Cold SSTORE; first document' },
-  'registerDocument(2+)': { gas: 116_465, notes: 'Warm deployer array; 2nd+ document' },
-  grantViewer:            { gas:  46_913, notes: 'Cold SSTORE in per-hash viewer mapping' },
+  registerDocument:       { gas: 207_825, notes: 'Cold SSTORE; first document (new struct slot)' },
+  'registerDocument(2+)': { gas: 190_725, notes: 'Warm deployer array; 2nd+ document' },
+  grantViewer:            { gas:  56_392, notes: 'Cold SSTORE in per-hash viewer mapping' },
 };
 
 // ── ABI loader ─────────────────────────────────────────────────────────────────
