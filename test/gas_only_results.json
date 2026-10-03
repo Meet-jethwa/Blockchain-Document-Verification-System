@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-10-03T16:40:04.866Z",
+  "solcVersion": "0.8.24",
+  "evmTarget": "shanghai",
+  "note": "Fresh in-process Hardhat node — zero prior state, clean artifact",
+  "gasResults": [
+    {
+      "Function": "registerDocument",
+      "Gas Used": 207825,
+      "Est USD (@ 25 Gwei, $3k)": "$15.5869",
+      "Notes": "Cold SSTORE; first document (new struct slot)"
+    },
+    {
+      "Function": "addDocumentVersion",
+      "Gas Used": 185479,
+      "Est USD (@ 25 Gwei, $3k)": "$13.9109",
+      "Notes": "Version digest appended to existing root mapping"
+    },
+    {
+      "Function": "grantViewer",
+      "Gas Used": 56392,
+      "Est USD (@ 25 Gwei, $3k)": "$4.2294",
+      "Notes": "Cold SSTORE in per-hash viewer mapping"
+    },
+    {
+      "Function": "revokeViewer",
+      "Gas Used": 27632,
+      "Est USD (@ 25 Gwei, $3k)": "$2.0724",
+      "Notes": "Warm SSTORE reset (slot already initialised)"
+    },
+    {
+      "Function": "grantRootViewer",
+      "Gas Used": 56998,
+      "Est USD (@ 25 Gwei, $3k)": "$4.2748",
+      "Notes": "Cold SSTORE in root-hash viewer mapping"
+    },
+    {
+      "Function": "revokeRootViewer",
+      "Gas Used": 30158,
+      "Est USD (@ 25 Gwei, $3k)": "$2.2618",
+      "Notes": "Warm SSTORE reset"
+    },
+    {
+      "Function": "revokeDocument",
+      "Gas Used": 48660,
+      "Est USD (@ 25 Gwei, $3k)": "$3.6495",
+      "Notes": "Status flag update on existing document slot"
+    },
+    {
+      "Function": "revokeDocumentRoot",
+      "Gas Used": 51178,
+      "Est USD (@ 25 Gwei, $3k)": "$3.8383",
+      "Notes": "Status flag update across root and version slots"
+    },
+    {
+      "Function": "registerDocument (2nd)",
+      "Gas Used": 190725,
+      "Est USD (@ 25 Gwei, $3k)": "$14.3044",
+      "Notes": "Warm deployer array; lower than first registration"
+    },
+    {
+      "Function": "canViewDocument (view)",
+      "Gas Used": 0,
+      "Est USD (@ 25 Gwei, $3k)": "$0.0000",
+      "Notes": "Read-only SLOAD; no gas when called externally"
+    },
+    {
+      "Function": "verifyDocument (view)",
+      "Gas Used": 0,
+      "Est USD (@ 25 Gwei, $3k)": "$0.0000",
+      "Notes": "Read-only SLOAD; no gas when called externally"
+    },
+    {
+      "Function": "isDocumentRevoked (view)",
+      "Gas Used": 0,
+      "Est USD (@ 25 Gwei, $3k)": "$0.0000",
+      "Notes": "Read-only SLOAD; no gas when called externally"
+    }
+  ]
+}
