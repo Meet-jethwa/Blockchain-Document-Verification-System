@@ -957,11 +957,53 @@ async function handleUpload(req, res) {
     const clientOrigSize = Number.isFinite(Number(req.body?.originalSize)) ? Number(req.body.originalSize) : size;
     const clientAlg      = typeof req.body?.alg      === "string" ? req.body.alg.trim()      : "aes-256-gcm";
 
-    // §IV-C: Optional owner self-wrapped key (JSON-encoded WrappedGranteeKey).
-    // The server treats it as an opaque JSON blob — it never has access to the raw AES key.
-    let ownerWrappedKey = null;
-    if (typeof req.body?.ownerWrappedKey === "string" && req.body.ownerWrappedKey.length > 0) {
-      try { ownerWrappedKey = JSON.parse(req.body.ownerWrappedKey); } catch { /* ignore malformed */ }
+    // §IV-C: Mandatory owner self-wrapped key (JSON-encoded WrappedGranteeKey).
+    //
+    // The paper (§IV-B/C) requires that every upload include an owner-wrapped copy
+    // of the AES document key so the owner can always retrieve and decrypt their own
+    // document.  Without it the ciphertext is permanently inaccessible to its owner.
+    //
+    // Security note: the server CANNOT prove the owner is able to unwrap the key
+    // (doing so would require the owner's private key, which must never leave the
+    // client).  The client is responsible for performing a self-test wrap→unwrap
+    // before uploading.  The server enforces only presence and structural correctness.
+    //
+    // Required structure (matches frontend WrappedGranteeKey type in clientCrypto.ts):
+    //   { ephemeralPub: string, wrappedKey: string, alg: "ecdh-p256-aeskw" }
+    const rawOwnerWrappedKey = req.body?.ownerWrappedKey;
+    if (typeof rawOwnerWrappedKey !== "string" || rawOwnerWrappedKey.trim().length === 0) {
+      return res.status(400).json({
+        error:
+          "Missing 'ownerWrappedKey' form field. " +
+          "The client must supply an ECDH-P256-AESKW wrapped copy of the document key " +
+          "so the owner can later retrieve the document. " +
+          "See clientCrypto.ts wrapKeyForGrantee() / §IV-C.",
+      });
+    }
+    let ownerWrappedKey;
+    try {
+      ownerWrappedKey = JSON.parse(rawOwnerWrappedKey.trim());
+    } catch {
+      return res.status(400).json({
+        error: "Malformed 'ownerWrappedKey': value is not valid JSON.",
+      });
+    }
+    // Structural validation — server cannot decrypt, but verifies required fields exist
+    if (
+      typeof ownerWrappedKey !== "object" ||
+      ownerWrappedKey === null ||
+      typeof ownerWrappedKey.ephemeralPub !== "string" ||
+      ownerWrappedKey.ephemeralPub.trim().length === 0 ||
+      typeof ownerWrappedKey.wrappedKey !== "string" ||
+      ownerWrappedKey.wrappedKey.trim().length === 0 ||
+      ownerWrappedKey.alg !== "ecdh-p256-aeskw"
+    ) {
+      return res.status(400).json({
+        error:
+          "Malformed 'ownerWrappedKey': must be a JSON object with non-empty " +
+          "'ephemeralPub' (string), 'wrappedKey' (string), and alg === 'ecdh-p256-aeskw'. " +
+          "Ensure the client calls wrapKeyForGrantee() before uploading.",
+      });
     }
 
     const fileMeta = { name: clientName, mimetype: clientMimetype, size: clientOrigSize };
@@ -1039,9 +1081,9 @@ async function handleUpload(req, res) {
       },
       file: fileMeta,
       access: "owned",
-      // §IV-C: Owner's ECIES-wrapped copy of the AES-GCM document key.
-      // Stored opaquely — server never sees the raw key.
-      ...(ownerWrappedKey ? { ownerWrappedKey } : {}),
+      // §IV-C: Owner's ECDH-P256-AESKW wrapped copy of the AES-GCM document key.
+      // Validated above — always present. Stored opaquely; server never sees the raw key.
+      ownerWrappedKey,
     });
 
     return res.json({

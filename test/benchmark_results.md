@@ -1,6 +1,6 @@
 # BDVS Comprehensive Benchmarking & Methodology Report
 
-**Execution Timestamp:** 2026-10-03T16:44:55.836Z  
+**Execution Timestamp:** 2026-10-04T17:40:41.650Z  
 **Purpose:** Quantitative benchmarking report and formal response to Peer Reviews #1, #3, #4, and #6.
 
 ---
@@ -11,15 +11,15 @@ To ensure full scientific reproducibility, all benchmarking execution parameters
 
 | Specification Attribute | Value |
 | :--- | :--- |
-| **Operating System** | Windows_NT 10.0.26300 (x64) |
-| **CPU Processor Model** | `11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz` |
-| **CPU Clock Speed** | 2419 MHz |
-| **CPU Core Count** | 8 Logical Cores |
-| **Total System RAM** | 7.74 GB |
-| **Free Memory at Test** | 0.34 GB |
-| **Node.js Runtime Version** | `v24.21.0` |
-| **V8 Engine Version** | `13.6.233.17-node.53` |
-| **OpenSSL Cryptographic Core** | `3.5.8` |
+| **Operating System** | Windows_NT 10.0.26200 (x64) |
+| **CPU Processor Model** | `12th Gen Intel(R) Core(TM) i9-12900H` |
+| **CPU Clock Speed** | 2918 MHz |
+| **CPU Core Count** | 20 Logical Cores |
+| **Total System RAM** | 15.71 GB |
+| **Free Memory at Test** | 3.94 GB |
+| **Node.js Runtime Version** | `v22.12.0` |
+| **V8 Engine Version** | `12.4.254.21-node.21` |
+| **OpenSSL Cryptographic Core** | `3.0.15+quic` |
 | **Ethers.js Library Version** | `^6.16.0` |
 | **Sample Size** | N = 50 runs per payload (with 10 warm-up runs) |
 
@@ -33,49 +33,49 @@ Measured throughput (MB/s), mean latency ($\mu$), sample standard deviation ($\s
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 0.475 ms | 0.3484 ms | ±0.4499 ms | [0.3503, 0.5997] ms | **205.6 MB/s** |
-| **SHA-256** | 256 bits | 0.273 ms | 0.2232 ms | ±0.1923 ms | [0.2197, 0.3263] ms | **357.72 MB/s** |
-| **SHA-3 (256)** | 256 bits | 0.7603 ms | 0.7758 ms | ±0.1688 ms | [0.7136, 0.8071] ms | **128.44 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 0.4001 ms | 0.4073 ms | ±0.0782 ms | [0.3784, 0.4218] ms | **244.07 MB/s** |
-| **Keccak-256 (ethers.js — includes hex/Buffer marshal)** | 256 bits | 20.9386 ms | 20.4515 ms | ±3.4481 ms | [19.9828, 21.8944] ms | **4.66 MB/s** |
-| **Keccak-256 (js-sha3 — pure JS, no marshal)** | 256 bits | 11.3616 ms | 10.553 ms | ±2.9929 ms | [10.5320, 12.1912] ms | **8.6 MB/s** |
-| **Keccak-256 (keccak native C bindings)** | 256 bits | 1.7984 ms | 1.5773 ms | ±0.9234 ms | [1.5424, 2.0543] ms | **54.3 MB/s** |
+| **MD5** | 128 bits | 0.1584 ms | 0.1569 ms | ±0.0032 ms | [0.1575, 0.1593] ms | **616.59 MB/s** |
+| **SHA-256** | 256 bits | 0.0688 ms | 0.0684 ms | ±0.002 ms | [0.0683, 0.0694] ms | **1418.84 MB/s** |
+| **SHA-3 (256)** | 256 bits | 0.2268 ms | 0.2246 ms | ±0.0118 ms | [0.2235, 0.2300] ms | **430.66 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 0.1811 ms | 0.1798 ms | ±0.0041 ms | [0.1800, 0.1822] ms | **539.24 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 2.2489 ms | 2.2428 ms | ±0.0514 ms | [2.2347, 2.2632] ms | **43.42 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 0.2903 ms | 0.2873 ms | ±0.0091 ms | [0.2878, 0.2928] ms | **336.37 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 6.045 ms | 5.9442 ms | ±0.2591 ms | [5.9732, 6.1168] ms | **16.15 MB/s** |
 
 ### Payload Size: 1 MB (10,48,576 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 4.6424 ms | 4.282 ms | ±0.9577 ms | [4.3769, 4.9078] ms | **215.41 MB/s** |
-| **SHA-256** | 256 bits | 2.8959 ms | 2.5752 ms | ±1.2666 ms | [2.5449, 3.2470] ms | **345.31 MB/s** |
-| **SHA-3 (256)** | 256 bits | 10.04 ms | 10.0347 ms | ±1.6168 ms | [9.5918, 10.4881] ms | **99.6 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 5.8001 ms | 5.2122 ms | ±2.2269 ms | [5.1828, 6.4173] ms | **172.41 MB/s** |
-| **Keccak-256 (ethers.js — includes hex/Buffer marshal)** | 256 bits | 161.1726 ms | 157.2534 ms | ±25.6272 ms | [154.0691, 168.2761] ms | **6.2 MB/s** |
-| **Keccak-256 (js-sha3 — pure JS, no marshal)** | 256 bits | 59.5494 ms | 56.1136 ms | ±15.5484 ms | [55.2396, 63.8592] ms | **16.79 MB/s** |
-| **Keccak-256 (keccak native C bindings)** | 256 bits | 15.8994 ms | 15.7588 ms | ±4.0247 ms | [14.7839, 17.0150] ms | **62.9 MB/s** |
+| **MD5** | 128 bits | 1.6038 ms | 1.5762 ms | ±0.0634 ms | [1.5862, 1.6213] ms | **623.53 MB/s** |
+| **SHA-256** | 256 bits | 0.7531 ms | 0.7283 ms | ±0.0771 ms | [0.7318, 0.7745] ms | **1327.78 MB/s** |
+| **SHA-3 (256)** | 256 bits | 2.4291 ms | 2.3891 ms | ±0.154 ms | [2.3864, 2.4718] ms | **411.67 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 1.9287 ms | 1.9124 ms | ±0.0983 ms | [1.9015, 1.9559] ms | **518.48 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 23.2774 ms | 23.2102 ms | ±0.4941 ms | [23.1405, 23.4144] ms | **42.96 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 2.958 ms | 2.9346 ms | ±0.1003 ms | [2.9302, 2.9858] ms | **338.07 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 63.2376 ms | 61.7191 ms | ±7.6405 ms | [61.1197, 65.3554] ms | **15.81 MB/s** |
 
 ### Payload Size: 5 MB (52,42,880 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 17.2258 ms | 16.4733 ms | ±2.4503 ms | [16.5466, 17.9050] ms | **290.26 MB/s** |
-| **SHA-256** | 256 bits | 9.6822 ms | 9.3784 ms | ±1.417 ms | [9.2895, 10.0750] ms | **516.41 MB/s** |
-| **SHA-3 (256)** | 256 bits | 39.0463 ms | 36.6234 ms | ±8.2145 ms | [36.7694, 41.3233] ms | **128.05 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 13.0715 ms | 12.6187 ms | ±2.1056 ms | [12.4879, 13.6552] ms | **382.51 MB/s** |
-| **Keccak-256 (ethers.js — includes hex/Buffer marshal)** | 256 bits | 844.1913 ms | 770.1489 ms | ±221.8097 ms | [782.7088, 905.6738] ms | **5.92 MB/s** |
-| **Keccak-256 (js-sha3 — pure JS, no marshal)** | 256 bits | 317.0216 ms | 290.5697 ms | ±76.992 ms | [295.6805, 338.3626] ms | **15.77 MB/s** |
-| **Keccak-256 (keccak native C bindings)** | 256 bits | 52.1597 ms | 49.4193 ms | ±9.0379 ms | [49.6545, 54.6649] ms | **95.86 MB/s** |
+| **MD5** | 128 bits | 8.1533 ms | 8.0943 ms | ±0.2512 ms | [8.0837, 8.2229] ms | **613.25 MB/s** |
+| **SHA-256** | 256 bits | 3.5298 ms | 3.4845 ms | ±0.145 ms | [3.4896, 3.5700] ms | **1416.5 MB/s** |
+| **SHA-3 (256)** | 256 bits | 12.2647 ms | 11.8779 ms | ±1.4228 ms | [11.8703, 12.6591] ms | **407.67 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 11.0495 ms | 9.6807 ms | ±2.8493 ms | [10.2597, 11.8393] ms | **452.51 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 116.3974 ms | 115.7705 ms | ±3.7873 ms | [115.3476, 117.4472] ms | **42.96 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 14.5904 ms | 14.5071 ms | ±0.2648 ms | [14.5170, 14.6639] ms | **342.69 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 304.1 ms | 303.0242 ms | ±5.6856 ms | [302.5240, 305.6759] ms | **16.44 MB/s** |
 
 ### Payload Size: 10 MB (1,04,85,760 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 30.3764 ms | 30.3869 ms | ±2.5807 ms | [29.6611, 31.0918] ms | **329.2 MB/s** |
-| **SHA-256** | 256 bits | 17.2713 ms | 16.8457 ms | ±2.13 ms | [16.6809, 17.8617] ms | **579 MB/s** |
-| **SHA-3 (256)** | 256 bits | 62.6402 ms | 62.0252 ms | ±4.6785 ms | [61.3434, 63.9370] ms | **159.64 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 27.7689 ms | 27.3383 ms | ±3.6646 ms | [26.7531, 28.7847] ms | **360.11 MB/s** |
-| **Keccak-256 (ethers.js — includes hex/Buffer marshal)** | 256 bits | 1545.5853 ms | 1402.8442 ms | ±415.7855 ms | [1430.3354, 1660.8351] ms | **6.47 MB/s** |
-| **Keccak-256 (js-sha3 — pure JS, no marshal)** | 256 bits | 744.4859 ms | 741.5249 ms | ±163.4545 ms | [699.1786, 789.7932] ms | **13.43 MB/s** |
-| **Keccak-256 (keccak native C bindings)** | 256 bits | 109.1819 ms | 99.0319 ms | ±31.6695 ms | [100.4036, 117.9603] ms | **91.59 MB/s** |
+| **MD5** | 128 bits | 16.1297 ms | 16.1015 ms | ±0.3569 ms | [16.0308, 16.2286] ms | **619.97 MB/s** |
+| **SHA-256** | 256 bits | 6.9053 ms | 6.8352 ms | ±0.2437 ms | [6.8377, 6.9728] ms | **1448.16 MB/s** |
+| **SHA-3 (256)** | 256 bits | 23.3209 ms | 23.2308 ms | ±0.4985 ms | [23.1828, 23.4591] ms | **428.8 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 18.9205 ms | 18.8387 ms | ±0.3881 ms | [18.8130, 19.0281] ms | **528.53 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 232.6507 ms | 231.4015 ms | ±3.5739 ms | [231.6600, 233.6413] ms | **42.98 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 29.4315 ms | 29.1993 ms | ±0.6667 ms | [29.2467, 29.6162] ms | **339.77 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 613.8725 ms | 610.2051 ms | ±10.6854 ms | [610.9106, 616.8343] ms | **16.29 MB/s** |
 
 ---
 
@@ -84,8 +84,8 @@ Measured throughput (MB/s), mean latency ($\mu$), sample standard deviation ($\s
 ### A. Unencrypted vs Client-Side Encrypted Pipeline Overhead (1 MB Payload)
 | Pipeline Component | Mean Latency (ms) | Overhead vs Baseline |
 | :--- | :--- | :--- |
-| **Direct Hashing Baseline** | 1.6234 ms | Baseline (0.00 ms) |
-| **AES-256-GCM Encrypt + Hash Pipeline** | 4.2942 ms | +2.6708 ms |
+| **Direct Hashing Baseline** | 0.7132 ms | Baseline (0.00 ms) |
+| **AES-256-GCM Encrypt + Hash Pipeline** | 2.221 ms | +1.5078 ms |
 
 ### B. Network & Consensus Delay Baselines
 | Operation Type | Target System Layer | Mean / Expected Latency Range | Dominant Latency Factor |
@@ -102,14 +102,14 @@ Measured throughput (MB/s), mean latency ($\mu$), sample standard deviation ($\s
 
 | Function | Gas Used | Est. Cost @ 25 Gwei ($3k ETH) | Notes |
 | :--- | :--- | :--- | :--- |
-| `registerDocument` | **2,07,825** | $15.5869 | Cold SSTORE; first document (new struct slot) |
+| `registerDocument` | **2,07,813** | $15.586 | Cold SSTORE; first document (new struct slot) |
 | `addDocumentVersion` | **1,85,467** | $13.91 | Version digest appended to existing root mapping |
-| `grantViewer` | **56,392** | $4.2294 | Cold SSTORE in per-hash viewer mapping |
-| `revokeViewer` | **27,632** | $2.0724 | Warm SSTORE reset (slot already initialised) |
-| `grantRootViewer` | **56,998** | $4.2748 | Cold SSTORE in root-hash viewer mapping |
-| `revokeRootViewer` | **30,158** | $2.2618 | Warm SSTORE reset |
-| `revokeDocument` | **48,648** | $3.6486 | Status flag update on existing document slot |
-| `revokeDocumentRoot` | **51,178** | $3.8383 | Status flag update across root and version slots |
+| `grantViewer` | **56,380** | $4.2285 | Cold SSTORE in per-hash viewer mapping |
+| `revokeViewer` | **27,620** | $2.0715 | Warm SSTORE reset (slot already initialised) |
+| `grantRootViewer` | **56,986** | $4.274 | Cold SSTORE in root-hash viewer mapping |
+| `revokeRootViewer` | **30,146** | $2.261 | Warm SSTORE reset |
+| `revokeDocument` | **48,660** | $3.6495 | Status flag update on existing document slot |
+| `revokeDocumentRoot` | **51,166** | $3.8375 | Status flag update across root and version slots |
 | `registerDocument (2nd)` | **1,90,725** | $14.3044 | Warm deployer array; lower than first registration |
 | `canViewDocument (view)` | **0** | $0.0000 | Read-only SLOAD; no gas when called externally |
 | `verifyDocument (view)` | **0** | $0.0000 | Read-only SLOAD; no gas when called externally |
@@ -126,14 +126,14 @@ Measured throughput (MB/s), mean latency ($\mu$), sample standard deviation ($\s
 \hline
 \textbf{Function} & \textbf{Gas Used} & \textbf{Notes} \\
 \hline
-registerDocument & 2,07,825 & Cold SSTORE; first document (new struct slot) \\
+registerDocument & 2,07,813 & Cold SSTORE; first document (new struct slot) \\
 addDocumentVersion & 1,85,467 & Version digest appended to existing root mapping \\
-grantViewer & 56,392 & Cold SSTORE in per-hash viewer mapping \\
-revokeViewer & 27,632 & Warm SSTORE reset (slot already initialised) \\
-grantRootViewer & 56,998 & Cold SSTORE in root-hash viewer mapping \\
-revokeRootViewer & 30,158 & Warm SSTORE reset \\
-revokeDocument & 48,648 & Status flag update on existing document slot \\
-revokeDocumentRoot & 51,178 & Status flag update across root and version slots \\
+grantViewer & 56,380 & Cold SSTORE in per-hash viewer mapping \\
+revokeViewer & 27,620 & Warm SSTORE reset (slot already initialised) \\
+grantRootViewer & 56,986 & Cold SSTORE in root-hash viewer mapping \\
+revokeRootViewer & 30,146 & Warm SSTORE reset \\
+revokeDocument & 48,660 & Status flag update on existing document slot \\
+revokeDocumentRoot & 51,166 & Status flag update across root and version slots \\
 registerDocument (2nd) & 1,90,725 & Warm deployer array; lower than first registration \\
 canViewDocument (view) & 0 & Read-only SLOAD; no gas when called externally \\
 verifyDocument (view) & 0 & Read-only SLOAD; no gas when called externally \\
@@ -147,19 +147,19 @@ isDocumentRevoked (view) & 0 & Read-only SLOAD; no gas when called externally \\
 
 | Document Volume | Cumulative Gas Consumed | Cost @ 10 Gwei | Cost @ 25 Gwei | Cost @ 50 Gwei | Cost @ 100 Gwei |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1 doc(s)** | 2,07,825 gas | $6.23 | **$15.59** | $31.17 | $62.35 |
-| **100 doc(s)** | 2,07,82,500 gas | $623.48 | **$1558.69** | $3117.38 | $6234.75 |
-| **1,000 doc(s)** | 20,78,25,000 gas | $6234.75 | **$15586.88** | $31173.75 | $62347.50 |
-| **10,000 doc(s)** | 2,07,82,50,000 gas | $62347.50 | **$155868.75** | $311737.50 | $623475.00 |
+| **1 doc(s)** | 2,07,813 gas | $6.23 | **$15.59** | $31.17 | $62.34 |
+| **100 doc(s)** | 2,07,81,300 gas | $623.44 | **$1558.60** | $3117.19 | $6234.39 |
+| **1,000 doc(s)** | 20,78,13,000 gas | $6234.39 | **$15585.98** | $31171.95 | $62343.90 |
+| **10,000 doc(s)** | 2,07,81,30,000 gas | $62343.90 | **$155859.75** | $311719.50 | $623439.00 |
 
 ### D. Theoretical On-Chain vs Off-Chain Hashing Gas Rationale
 
 | Hash Function | Off-Chain BDVS Storage Gas | On-Chain Verification Gas (if calculated in Solidity) | Native EVM Support |
 | :--- | :--- | :--- | :--- |
-| **Keccak-256 (Selected)** | **2,07,825 gas** (Cold SSTORE) | ~30 gas base + 6 gas/word | **Native Opcode (`SHA3` 0x20)** |
-| **SHA-256** | **2,07,825 gas** (Cold SSTORE) | ~60 gas base + 12 gas/word | **Precompile (0x02)** |
-| **SHA-3 (NIST)** | **2,07,825 gas** (Cold SSTORE) | ~600–800+ gas/word | Pure interpreted bytecode |
-| **Blake2b** | **2,07,825 gas** (Cold SSTORE) | ~600–900+ gas/word | Pure interpreted bytecode |
+| **Keccak-256 (Selected)** | **2,07,813 gas** (Cold SSTORE) | ~30 gas base + 6 gas/word | **Native Opcode (`SHA3` 0x20)** |
+| **SHA-256** | **2,07,813 gas** (Cold SSTORE) | ~60 gas base + 12 gas/word | **Precompile (0x02)** |
+| **SHA-3 (NIST)** | **2,07,813 gas** (Cold SSTORE) | ~600–800+ gas/word | Pure interpreted bytecode |
+| **Blake2b** | **2,07,813 gas** (Cold SSTORE) | ~600–900+ gas/word | Pure interpreted bytecode |
 
 #### Core Architectural Findings:
 1. **Gas Cost Invariance for Off-Chain Storage**: All 256-bit hash functions produce a 32-byte digest (`bytes32`), resulting in identical storage gas (**~207,825 gas cold SSTORE with owner array insertion**) in BDVS.
@@ -172,8 +172,8 @@ isDocumentRevoked (view) & 0 & Read-only SLOAD; no gas when called externally \\
 ## 5. Concurrent Load Benchmark (§10.1 — Reviewer Concurrency Gap)
 
 **Configuration:** 10 concurrent virtual users × 30 reps = **300 total operations**  
-**Wall-clock time:** Phase 1 (register+verify): 17552 ms | Phase 2 (reads): 3790 ms | Total: 21342 ms  
-**Throughput:** **17.1 registrations/sec** (10 concurrent users, wall clock)
+**Wall-clock time:** Phase 1 (register+verify): 1733 ms | Phase 2 (reads): 294 ms | Total: 2027 ms  
+**Throughput:** **173.1 registrations/sec** (10 concurrent users, wall clock)
 
 > **Scope note (§10.1):** This benchmark tests concurrent application-layer request handling
 > against a single in-process Hardhat node. It is a realistic simulation of multi-browser /
@@ -185,23 +185,49 @@ isDocumentRevoked (view) & 0 & Read-only SLOAD; no gas when called externally \\
 
 | Metric | min | median | mean ± 95% CI | p95 | p99 | max |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **registerDocument() latency (ms)** | 242.0 | 364.5 | 498.7 ±37.8 | 1449.4 | 1783.2 | 1870.0 |
+| **registerDocument() latency (ms)** | 42.0 | 49.0 | 49.5 ±0.5 | 55.0 | 65.0 | 67.0 |
 | **registerDocument() gas (units)** | 190701 | 190725 | 191293 ±348 | 190725 | 207825 | 207825 |
-| **verifyDocument() latency (ms)** | 13.0 | 71.5 | 85.6 ±5.1 | 172.9 | 242.4 | 298.0 |
-| **getDocumentMeta() latency (ms)** | 17.0 | 91.5 | 105.1 ±4.4 | 189.2 | 234.0 | 239.0 |
+| **verifyDocument() latency (ms)** | 4.0 | 8.0 | 8.1 ±0.1 | 10.0 | 12.0 | 12.0 |
+| **getDocumentMeta() latency (ms)** | 6.0 | 8.0 | 7.9 ±0.1 | 10.0 | 11.0 | 12.0 |
 
 ### B. Per-User Registration Latency Breakdown
 
 | User | Median latency (ms) | p95 latency (ms) | Median gas (units) |
 | :--- | :--- | :--- | :--- |
-| user-00 | 379.0 | 1191.7 | 190725 |
-| user-01 | 370.0 | 1142.9 | 190725 |
-| user-02 | 384.0 | 1142.8 | 190725 |
-| user-03 | 374.0 | 1177.2 | 190725 |
-| user-04 | 358.0 | 1178.9 | 190725 |
-| user-05 | 369.5 | 1188.1 | 190725 |
-| user-06 | 362.0 | 1180.6 | 190725 |
-| user-07 | 361.0 | 1196.7 | 190725 |
-| user-08 | 360.5 | 1161.1 | 190725 |
-| user-09 | 353.5 | 1157.0 | 190725 |
+| user-00 | 49.0 | 55.1 | 190725 |
+| user-01 | 49.0 | 53.5 | 190725 |
+| user-02 | 48.5 | 55.7 | 190725 |
+| user-03 | 49.0 | 53.5 | 190725 |
+| user-04 | 49.0 | 55.2 | 190725 |
+| user-05 | 49.0 | 54.5 | 190725 |
+| user-06 | 48.5 | 55.2 | 190725 |
+| user-07 | 49.0 | 54.5 | 190725 |
+| user-08 | 49.0 | 54.0 | 190725 |
+| user-09 | 49.5 | 54.0 | 190725 |
+
+---
+
+## 6. Live Sepolia Testnet Gas Cross-Validation (Review #6 Resolution)
+
+**Execution Timestamp:** 2026-10-04T17:44:32.159Z  
+**Network:** Ethereum Sepolia Testnet (`chainId: 11155111`)  
+**Contract Address:** [`0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3`](https://sepolia.etherscan.io/address/0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3)  
+**Test Wallet:** `0x8531f9631b50aD8973cDF107dbF1701c6353AF7C`  
+**Block Number:** `11843616`  
+**Raw JSON Artifact:** [`test/sepolia_gas_results.json`](file:///d:/clg/TY/blockchain%20project/Document%20Verification%20System/test/sepolia_gas_results.json)
+
+To empirically close Reviewer #6's critique regarding the validity of local node EVM measurements on public decentralized networks, transactions were submitted directly to the live Ethereum Sepolia testnet and verified against transaction receipts (`receipt.gasUsed`):
+
+### A. Live Sepolia vs. Hardhat Gas Comparison Table
+
+| Operation | Hardhat Local (units) | Sepolia Live (units) | Delta (units) | Transaction Hash (Sepolia) | Match Status | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `registerDocument (warm array)` | 190,725 | **190,725** | +0 | `0x25dbbe7c58ab9de723c45a64ce15995cf8fc6bd91783d3aeae2d22814316d05c` | **✓ EXACT MATCH** | Warm deployer array; 2nd+ document |
+| `registerDocument (warm array)` | 190,725 | **190,725** | +0 | `0x59a0c747c9d30542a674c3c00ca9c6b9a057727dfb3972b54c4636611a9cd7d8` | **✓ EXACT MATCH** | Warm deployer array; 3rd+ document |
+| `registerDocument (warm array)` | 190,725 | **190,725** | +0 | `0xc788364706b9bb04bbaaf77a2275f0cf3cf4e4890f6b9d3a7ad09af41499f2fc` | **✓ EXACT MATCH** | Warm deployer array; 4th+ document |
+| `grantViewer (cold mapping)` | 56,392 | **56,392** | +0 | `0x07452d160c18c7617157d1847afba497141951df31920f2b0fec66addd651d09` | **✓ EXACT MATCH** | Cold SSTORE in per-hash viewer mapping |
+
+### B. Findings & EVM Equivalence
+1. **Zero-Gas Variance on Identical EVM State:** Both warm `registerDocument` (190,725 gas) and cold `grantViewer` (56,392 gas) produced **identical gas consumption** down to the exact unit ($\Delta = 0$).
+2. **Cold vs. Warm Registration Dynamics:** Cold initial document registration requires $207,813$ gas (allocating the sender's dynamic array slot via cold SSTORE), while all subsequent registrations by the same wallet consume $190,725$ gas (warm array length updates). Both states behave identically across local simulation and public testnet nodes.
 

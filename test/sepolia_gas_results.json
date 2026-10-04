@@ -1,20 +1,20 @@
 {
-  "timestamp": "2026-10-03T18:16:28.916Z",
+  "timestamp": "2026-10-04T17:44:32.159Z",
   "network": {
     "name": "sepolia",
     "chainId": "11155111"
   },
   "contract": "0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3",
   "tolerance": 200,
-  "allMatch": true,
+  "allMatch": false,
   "results": [
     {
       "op": "registerDocument (1st)",
       "hardhat": 207825,
-      "live": 207825,
+      "live": 190725,
       "notes": "Cold SSTORE; first document (new struct slot)",
-      "delta": 0,
-      "match": true
+      "delta": -17100,
+      "match": false
     },
     {
       "op": "registerDocument (2nd)",
@@ -35,9 +35,9 @@
     {
       "op": "grantViewer",
       "hardhat": 56392,
-      "live": 56380,
+      "live": 56392,
       "notes": "Cold SSTORE in per-hash viewer mapping",
-      "delta": -12,
+      "delta": 0,
       "match": true
     }
   ]
