@@ -13,6 +13,23 @@ import { createHash } from "node:crypto";
 import { ethers } from "ethers";
 
 /**
+ * Sentinel error class thrown by isDocumentRevoked() when the on-chain
+ * revocation check cannot be completed (network error, timeout, ABI mismatch).
+ *
+ * Callers MUST catch this and default to DENYING access (fail-closed):
+ *
+ *   const revoked = await chain.isDocumentRevoked(hash)
+ *     .catch((err) => { if (err instanceof RevocationLookupError) return true; throw err; });
+ */
+export class RevocationLookupError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = 'RevocationLookupError';
+    this.cause = cause ?? null;
+  }
+}
+
+/**
  * ABI (Application Binary Interface) for the DocumentRegistry smart contract
  * 
  * EXPLANATION FOR PROFESSOR:
@@ -635,12 +652,56 @@ export function makeChainClient({ rpcUrl, privateKey, contractAddress }) {
 			}
 		},
 
+		/**
+		 * Queries the on-chain revocation flag for a document hash.
+		 *
+		 * FAIL-CLOSED CONTRACT:
+		 *   If the RPC call fails for ANY reason (network error, timeout, node
+		 *   unavailable, ABI mismatch, provider returns garbage) this function
+		 *   throws RevocationLookupError.  It NEVER silently returns false.
+		 *
+		 * Callers that want fail-closed behaviour should do:
+		 *   const revoked = await chain.isDocumentRevoked(hash)
+		 *     .catch((err) => {
+		 *       if (err instanceof RevocationLookupError) return true; // deny
+		 *       throw err;
+		 *     });
+		 *
+		 * @param {string} hash - bytes32 document hash (0x + 64 hex chars)
+		 * @returns {Promise<boolean>} true = revoked, false = active
+		 * @throws {RevocationLookupError} if the lookup cannot be completed
+		 */
 		async isDocumentRevoked(hash) {
 			await assertContractDeployed();
+			// Hard timeout: 8 s is ample for a local/Sepolia view call.
+			// If the node is unreachable we must NOT return false (fail-open).
+			const REVOCATION_TIMEOUT_MS = 8000;
+			let timer;
+			const timeoutPromise = new Promise((_, reject) => {
+				timer = setTimeout(
+					() => reject(new RevocationLookupError(
+						`isDocumentRevoked(${hash}): RPC call timed out after ${REVOCATION_TIMEOUT_MS}ms — defaulting to fail-closed`
+					)),
+					REVOCATION_TIMEOUT_MS
+				);
+			});
 			try {
-				return await readContract.isDocumentRevoked(hash);
+				const result = await Promise.race([
+					readContract.isDocumentRevoked(hash),
+					timeoutPromise,
+				]);
+				clearTimeout(timer);
+				return Boolean(result);
 			} catch (err) {
-				rethrowAbiMismatch(err);
+				clearTimeout(timer);
+				// Re-throw RevocationLookupError as-is (includes timeout errors).
+				if (err instanceof RevocationLookupError) throw err;
+				// Wrap any other error (ABI mismatch, network, etc.) so callers
+				// can handle it with a uniform fail-closed catch.
+				throw new RevocationLookupError(
+					`isDocumentRevoked(${hash}): lookup failed — ${err?.message ?? String(err)}`,
+					err
+				);
 			}
 		},
   };

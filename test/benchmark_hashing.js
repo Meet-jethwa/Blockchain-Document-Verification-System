@@ -3,9 +3,11 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ethers } from 'ethers';
 import { performance } from 'node:perf_hooks';
+// js-sha3: pure-JS Keccak-256 — zero wrapper overhead, measures raw JS permutation speed
 import { sha3_256 as jsSha3_256 } from 'js-sha3';
+// ethers is only used for the "overhead reference" row; it is NOT the primary measurement
+import { ethers } from 'ethers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,16 +108,30 @@ export function runHashBenchmarks(options = {}) {
   const systemInfo = getSystemInfo();
 
   console.log('===============================================================');
-  console.log('         BDVS RIGOROUS STATISTICAL HASH BENCHMARK (N=25)        ');
+  console.log('   BDVS RIGOROUS STATISTICAL HASH BENCHMARK (N=25)             ');
+  console.log('   Primary: js-sha3 (pure JS) & keccak native C bindings        ');
+  console.log('   Overhead reference: ethers.js (includes hex/Buffer marshal)  ');
   console.log('===============================================================');
   console.log(`OS           : ${systemInfo.osType} ${systemInfo.osRelease} (${systemInfo.arch})`);
   console.log(`CPU          : ${systemInfo.cpuModel} @ ${systemInfo.cpuSpeedMHz} MHz (${systemInfo.cpuCores} cores)`);
   console.log(`RAM          : ${systemInfo.totalMemoryGB} (Free: ${systemInfo.freeMemoryGB})`);
   console.log(`Node.js      : ${systemInfo.nodeVersion} (V8: ${systemInfo.v8Version}, OpenSSL: ${systemInfo.opensslVersion})`);
-  console.log(`Ethers.js    : ${systemInfo.ethersVersion}`);
+  console.log(`Ethers.js    : ${systemInfo.ethersVersion} (overhead-reference only — not the primary measurement)`);
   console.log(`Sample Size  : N = ${iterations} runs per payload (Warmup: ${warmupRuns})`);
   console.log('---------------------------------------------------------------\n');
 
+  //
+  // Algorithm table — ordered from PRIMARY measurements first, then reference.
+  //
+  // PRIMARY (true native/pure-JS Keccak-256 speed, no wrapper overhead):
+  //   • Keccak-256 (js-sha3)    — pure-JS implementation; Buffer passed directly,
+  //                               no hex-string conversion, measures JS permutation.
+  //   • Keccak-256 (keccak C)   — native C addon; lowest-possible Node.js overhead.
+  //
+  // OVERHEAD REFERENCE (DO NOT cite as true Keccak throughput):
+  //   • Keccak-256 (ethers.js)  — wraps a Uint8Array → hex → hash → hex roundtrip;
+  //                               includes Buffer.from() + hex-encode cost on every call.
+  //
   const hashAlgorithms = [
     {
       name: 'MD5',
@@ -138,23 +154,30 @@ export function runHashBenchmarks(options = {}) {
       fn: (buf) => crypto.createHash('blake2b512').update(buf).digest('hex').substring(0, 64)
     },
     {
-      // Baseline: ethers.js keccak256 — hex/Buffer marshalling overhead is included
-      name: 'Keccak-256 (ethers.js — includes hex/Buffer marshal)',
-      outputBits: 256,
-      fn: (buf) => ethers.keccak256(buf)
-    },
-    {
-      // js-sha3: pure-JS implementation, no marshalling overhead
-      name: 'Keccak-256 (js-sha3 — pure JS, no marshal)',
+      // PRIMARY: pure-JS Keccak-256 via js-sha3.
+      // Buffer is accepted directly — no hex marshalling cost.
+      // This is the authoritative MB/s figure for pure-JS Keccak-256.
+      name: 'Keccak-256 (js-sha3 pure-JS) [PRIMARY]',
       outputBits: 256,
       fn: (buf) => jsSha3_256(buf)
     },
-    // Native C bindings: lowest possible overhead for the Keccak permutation in Node.js
+    // PRIMARY: native C bindings via the `keccak` npm package.
+    // Lowest possible overhead for the Keccak permutation inside Node.js.
     ...(keccakNative ? [{
-      name: 'Keccak-256 (keccak native C bindings)',
+      name: 'Keccak-256 (keccak native C bindings) [PRIMARY]',
       outputBits: 256,
       fn: (buf) => keccakNative('keccak256').update(buf).digest('hex')
     }] : []),
+    {
+      // OVERHEAD REFERENCE ONLY — NOT the primary Keccak-256 measurement.
+      // ethers.keccak256() converts the Buffer to a 0x-prefixed hex string internally
+      // (Buffer.from + hexlify) before hashing, and returns another hex string.
+      // The extra marshal cost inflates wall-clock time and REDUCES reported MB/s.
+      // Cite js-sha3 or native-C figures as the true Keccak-256 throughput.
+      name: 'Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]',
+      outputBits: 256,
+      fn: (buf) => ethers.keccak256(buf)
+    },
   ];
 
   const resultsByPayload = [];
@@ -208,7 +231,9 @@ if (process.argv[1] && process.argv[1].endsWith('benchmark_hashing.js')) {
   const benchmarkData = runHashBenchmarks({ iterations: 25, warmupRuns: 5 });
 
   console.log('\n===============================================================');
-  console.log('              STATISTICAL RESULTS WITH 95% CI                   ');
+  console.log('     STATISTICAL RESULTS WITH 95% CI                           ');
+  console.log('     ★  [PRIMARY] rows = true native/pure-JS Keccak-256 speed  ');
+  console.log('     ⚠  [OVERHEAD REF] = ethers.js includes hex marshal cost   ');
   console.log('===============================================================');
 
   for (const p of benchmarkData.resultsByPayload) {
@@ -223,4 +248,7 @@ if (process.argv[1] && process.argv[1].endsWith('benchmark_hashing.js')) {
       }))
     );
   }
+  console.log('\n[NOTE] Cite only [PRIMARY] rows as the authoritative Keccak-256 MB/s figures.');
+  console.log('[NOTE] The ethers.js [OVERHEAD REF] row includes ~Buffer.from + hexlify cost.');
+  console.log('[NOTE] js-sha3 and native C bindings operate directly on the raw byte buffer.');
 }

@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
 
 import { config } from "./config.js";
-import { makeChainClient } from "./chain.js";
+import { makeChainClient, RevocationLookupError } from "./chain.js";
 import { getDocument as getStoredDocument, listDocuments, putDocument, deleteDocument as deleteStoredDocument } from "./documentIndex.js";
 import { listSharedDocuments as listSharedStoreDocuments, listSharedDocumentsEnriched, putSharedDocument, deleteSharedDocument, deleteSharedDocumentForViewer } from "./sharedStore.js";
 import { pickIpfsUploader } from "./ipfs.js";
@@ -438,7 +438,17 @@ async function summarizeAccessibleDocuments(walletAddress) {
     summaries = await mapInBatches(hashes, 5, async (hash) => {
       const [meta, revoked, canView] = await Promise.all([
         chain.getDocumentMeta(hash).catch(() => null),
-        chain.isDocumentRevoked(hash).catch(() => null),
+        // FAIL-CLOSED: if the revocation lookup fails (network error, timeout, ABI
+        // mismatch) we treat the document as revoked and deny access.
+        // Returning false here would be fail-open and is a security defect.
+        chain.isDocumentRevoked(hash).catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[SECURITY] isDocumentRevoked(${hash}) failed — defaulting to REVOKED (fail-closed):`,
+            err?.message ?? String(err)
+          );
+          return true; // deny access when revocation status is unknowable
+        }),
         chain.canViewDocument(hash, walletAddress).catch(() => null),
       ]);
 
@@ -527,7 +537,16 @@ async function summarizeLocalDocuments(walletAddress) {
 async function buildVerificationResponse(hash) {
   const [existsOnChain, revoked, proof, verifiedOnChain] = await Promise.all([
     chain.documentExists(hash).catch(() => false),
-    chain.isDocumentRevoked(hash).catch(() => false),
+    // FAIL-CLOSED: a lookup error means we cannot confirm the document is NOT
+    // revoked — so we treat it as revoked rather than granting "authentic" status.
+    chain.isDocumentRevoked(hash).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SECURITY] buildVerificationResponse: isDocumentRevoked(${hash}) failed — defaulting to REVOKED (fail-closed):`,
+        err?.message ?? String(err)
+      );
+      return true; // deny verification when revocation status is unknowable
+    }),
     chain.getRegistrationProof(hash).catch(() => null),
     chain.verifyDocumentHash(hash).catch(() => false),
   ]);

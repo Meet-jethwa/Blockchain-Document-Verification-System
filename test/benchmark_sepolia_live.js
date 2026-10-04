@@ -33,6 +33,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+// js-sha3: pure-JS Keccak-256 — avoids ethers.js hex-marshal wrapper overhead.
+// Used to generate document hashes that are submitted on-chain.
+import { sha3_256 as jsSha3_256 } from 'js-sha3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -108,22 +111,26 @@ async function main() {
   console.log(`Wallet    : ${wallet.address}`);
   console.log(`Balance   : ${ethers.formatEther(await provider.getBalance(wallet.address))} ETH\n`);
 
-  // ── Transaction 1: registerDocument (cold) ──────────────────────────────────
-  const hash1 = ethers.keccak256(Buffer.from(`BDVS Sepolia Benchmark Doc #1 – ${Date.now()}`));
+  // Helper: compute Keccak-256 via js-sha3 (no ethers wrapper overhead) and
+  // format as a 0x-prefixed bytes32 hex string suitable for on-chain calls.
+  const keccak256Hex = (str) => `0x${jsSha3_256(Buffer.from(str))}`;
+
+  // ── Transaction 1: registerDocument (cold) ───────────────────────────────
+  const hash1 = keccak256Hex(`BDVS Sepolia Benchmark Doc #1 – ${Date.now()}`);
   console.log(`[1/4] registerDocument (1st, cold SSTORE)  hash=${hash1.slice(0, 12)}…`);
   const receipt1 = await (await registry.registerDocument(hash1, '')).wait();
   const gas1     = Number(receipt1.gasUsed);
   console.log(`      gasUsed=${gas1.toLocaleString()}  tx=${receipt1.hash}`);
 
   // ── Transaction 2: registerDocument (2nd) ───────────────────────────────────
-  const hash2 = ethers.keccak256(Buffer.from(`BDVS Sepolia Benchmark Doc #2 – ${Date.now()}`));
+  const hash2 = keccak256Hex(`BDVS Sepolia Benchmark Doc #2 – ${Date.now()}`);
   console.log(`[2/4] registerDocument (2nd, warm array)   hash=${hash2.slice(0, 12)}…`);
   const receipt2 = await (await registry.registerDocument(hash2, '')).wait();
   const gas2     = Number(receipt2.gasUsed);
   console.log(`      gasUsed=${gas2.toLocaleString()}  tx=${receipt2.hash}`);
 
   // ── Transaction 3: registerDocument (3rd) ───────────────────────────────────
-  const hash3 = ethers.keccak256(Buffer.from(`BDVS Sepolia Benchmark Doc #3 – ${Date.now()}`));
+  const hash3 = keccak256Hex(`BDVS Sepolia Benchmark Doc #3 – ${Date.now()}`);
   console.log(`[3/4] registerDocument (3rd, warm array)   hash=${hash3.slice(0, 12)}…`);
   const receipt3 = await (await registry.registerDocument(hash3, '')).wait();
   const gas3     = Number(receipt3.gasUsed);
