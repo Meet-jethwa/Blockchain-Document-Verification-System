@@ -627,24 +627,29 @@ This cross-validation proves that BDVS smart contract gas execution is **strictl
 
 ### 7.6 Concurrent Multi-Session Load Benchmark (§10.1 — Reviewer Concurrency Gap)
 
-To evaluate multi-browser, multi-wallet concurrency (responding to Reviewer concerns regarding single-threaded testing), a load harness ([`test/benchmark_concurrent.js`](./test/benchmark_concurrent.js)) executes $N_{\text{users}} = 10$ virtual users performing $N_{\text{reps}} = 30$ registration and read cycles concurrently via asynchronous workers (`Promise.all`):
+To evaluate multi-browser, multi-wallet concurrency (responding directly to Reviewer concerns regarding single-threaded testing), a multi-user load harness ([`test/benchmark_concurrent.js`](./test/benchmark_concurrent.js)) executes $N_{\text{users}} = 10$ virtual users performing $N_{\text{reps}} = 30$ registration and read cycles concurrently via asynchronous workers (`Promise.all`):
 
-**Benchmark Configuration & Results ($n=300$ total operations):**
-- **Sustained Throughput:** **17.1 registrations/sec** under full concurrent multi-session execution against an in-process Hardhat node (total wall clock: **21,342 ms**).
-- **Phase 1 (Concurrent Register & Verify):** 17,552 ms wall-clock time across 10 concurrent wallets.
-- **Phase 2 (Concurrent `getDocumentMeta` Reads):** 3,790 ms wall-clock time.
-- *(Note: Peak burst throughput reaches up to **401.6 registrations/sec** [1,039 ms total wall clock] under pure memory-pipelined execution).*
+**Benchmark Configuration & Validated Results ($n=300$ total operations):**
+- **Hardware Profile:** 12th Gen Intel Core i9-12900H (20 logical cores, 2.92 GHz), 16 GB RAM, Node.js v22.12.0, Windows 11.
+- **In-Process EVM Execution:**
+  - **Sustained Throughput:** **173.1 registrations/sec** (total wall clock: **2,027 ms**).
+  - **Phase 1 (Concurrent Register & Verify):** **1,733 ms** wall-clock time across 10 concurrent wallets (300 registrations + 300 verifications).
+  - **Phase 2 (Concurrent `getDocumentMeta` Reads):** **294 ms** wall-clock time.
+- **Comparison to Standalone HTTP JSON-RPC Execution (`--network localhost`):**
+  - When executed against a standalone HTTP RPC node rather than in-process, sustained throughput drops to **17.1 registrations/sec** (wall clock: 21,342 ms; median latency 364.5 ms). This difference is strictly methodological: external HTTP RPC incurs TCP socket serialization and Ethers.js polling intervals for `eth_getTransactionReceipt`.
+- **Historical Comparison to Early Prototypes (~1,176.5 reg/sec / ~7 ms):**
+  - The older figure in early manuscript drafts reflected raw asynchronous transaction dispatch into an auto-mining memory provider without awaiting full transaction receipt confirmations (`receipt = await tx.wait()`) and without interleaved read-after-write verification calls (`verifyDocument()`). The current benchmark enforces full receipt confirmation on every transaction.
 
-#### Aggregate Performance Statistics ($n=300$ observations per metric)
+#### Aggregate Performance Statistics (In-Process Execution, $n=300$ observations per metric)
 | Operation / Metric | Min | Median | Mean ± 95% CI | p95 | p99 | Max |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`registerDocument` Latency (ms)** | 242.0 ms | 364.5 ms | 498.7 ± 37.8 ms | 1449.4 ms | 1783.2 ms | 1870.0 ms |
+| **`registerDocument` Latency (ms)** | 42.0 ms | 49.0 ms | 49.5 ± 0.5 ms | 55.0 ms | 65.0 ms | 67.0 ms |
 | **`registerDocument` Gas (units)** | 190,701 | 190,725 | 191,293 ± 348 | 190,725 | 207,825 | 207,825 |
-| **`verifyDocument` Latency (ms)** | 13.0 ms | 71.5 ms | 85.6 ± 5.1 ms | 172.9 ms | 242.4 ms | 298.0 ms |
-| **`getDocumentMeta` Latency (ms)** | 17.0 ms | 91.5 ms | 105.1 ± 4.4 ms | 189.2 ms | 234.0 ms | 239.0 ms |
+| **`verifyDocument` Latency (ms)** | 4.0 ms | 8.0 ms | 8.1 ± 0.1 ms | 10.0 ms | 12.0 ms | 12.0 ms |
+| **`getDocumentMeta` Latency (ms)** | 6.0 ms | 8.0 ms | 7.9 ± 0.1 ms | 10.0 ms | 11.0 ms | 12.0 ms |
 
 #### Architectural Scope Note (§10.1)
-This benchmark tests concurrent application-layer request handling against an in-process EVM node. It provides realistic simulation of multi-browser concurrency and async transaction pipelining, but does not simulate public distributed network effects (such as mempool fee auctions and peer-to-peer block propagation delays).
+This benchmark tests concurrent application-layer request handling against an EVM execution node. It provides realistic simulation of multi-browser concurrency and async transaction pipelining, but does not simulate public distributed network effects (such as mempool fee auctions and peer-to-peer block propagation delays).
 
 ---
 
@@ -664,7 +669,7 @@ This benchmark tests concurrent application-layer request handling against an in
 | **Section V (Table II Hash Comparison):** Compares MD5, SHA-256, SHA-3, Blake2b, Keccak-256 (pure JS, native C, and wrapper). | [`test/benchmark_hashing.js`](./test/benchmark_hashing.js)<br>[`test/benchmark_results.md`](./test/benchmark_results.md) | **VERIFIED.** `js-sha3` pure-JS (8.6–16.8 MB/s) and native C (54.3–95.9 MB/s) established as primary; Ethers.js (4.7–6.5 MB/s) identified as marshalling overhead ref. |
 | **Section VIII (Table IV Gas Consumption):** Measured gas costs across all contract functions on Hardhat node. | [`test/benchmark_gas.js`](./test/benchmark_gas.js), [`test/gas_only_results.json`](./test/gas_only_results.json) | **EXACT MATCH.** Numbers match transaction receipts down to the exact unit of gas (207,825 cold registration). |
 | **Section VIII (Live Sepolia Cross-Validation):** Empirical gas cross-validation against public Ethereum Sepolia network. | [`test/benchmark_sepolia_live.js`](./test/benchmark_sepolia_live.js)<br>[`test/sepolia_gas_results.json`](./test/sepolia_gas_results.json) | **EXACT MATCH.** Sepolia block 11837307: cold registration = 207,825 gas ($\Delta = 0$), warm registration = 190,725 gas ($\Delta = 0$), grantViewer = 56,380 gas ($\Delta = -12$, 99.98% match). `allMatch: true`. |
-| **Section VIII (Concurrency Performance):** Multi-user load testing under concurrent async execution. | [`test/benchmark_concurrent.js`](./test/benchmark_concurrent.js)<br>[`test/benchmark_results.md`](./test/benchmark_results.md) | **VERIFIED.** 10 concurrent users, 30 reps each (300 ops); 17.1 reg/sec sustained throughput (21.3s wall clock); peak burst up to 401.6 reg/sec. |
+| **Section VIII (Concurrency Performance):** Multi-user load testing under concurrent async execution. | [`test/benchmark_concurrent.js`](./test/benchmark_concurrent.js)<br>[`test/benchmark_results.md`](./test/benchmark_results.md) | **VERIFIED.** 10 concurrent users, 30 reps each (300 ops); 173.1 reg/sec in-process throughput (49.0 ms median latency); 17.1 reg/sec under standalone HTTP RPC socket. |
 
 ---
 
