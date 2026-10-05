@@ -5,6 +5,7 @@ export type EncryptedClientPayload = {
   iv: Uint8Array;
   authTag: Uint8Array;
   alg: 'aes-256-gcm';
+  version?: number;
 };
 
 export type SignedAuthHeaders = {
@@ -53,7 +54,6 @@ export type GranteeP256PubKey = {
 };
 
 const KEY_DERIVATION_PROMPT = 'BDVS Encryption Key Generation: ';
-const AUTH_PROMPT = 'BDVS Authentication: ';
 
 /**
  * Derives a 256-bit AES-GCM CryptoKey from a wallet signature using HKDF.
@@ -157,18 +157,136 @@ export async function deriveWalletMasterKey(
   );
 }
 
+export const AAD_FIXED_LABEL = 'BDVS-DOCUMENT-AAD:';
+export const CIPHERTEXT_VERSION_BYTE = 0x01;
+
+/**
+ * Derives Additional Authenticated Data (AAD) for AES-256-GCM
+ * by combining a fixed label and the document digest H.
+ */
+export function getDocumentAad(digest: string | Uint8Array): Uint8Array {
+  let digestStr: string;
+  if (typeof digest === 'string') {
+    digestStr = digest.startsWith('0x') ? digest.toLowerCase() : '0x' + digest.toLowerCase();
+  } else {
+    digestStr = ethers.hexlify(digest).toLowerCase();
+  }
+  return new TextEncoder().encode(AAD_FIXED_LABEL + digestStr);
+}
+
+export type UnpackedPayload = {
+  version: number | null;
+  iv: Uint8Array;
+  ciphertext: Uint8Array;
+  authTag: Uint8Array;
+};
+
+/**
+ * Packs [version byte (0x01)][12-byte IV][ciphertext][16-byte authTag] for upload.
+ */
+export function packEncryptedPayload(
+  encrypted: EncryptedClientPayload,
+  version: number = CIPHERTEXT_VERSION_BYTE
+): Uint8Array {
+  const combined = new Uint8Array(1 + encrypted.iv.length + encrypted.ciphertext.length + encrypted.authTag.length);
+  combined[0] = version;
+  combined.set(encrypted.iv, 1);
+  combined.set(encrypted.ciphertext, 1 + encrypted.iv.length);
+  combined.set(encrypted.authTag, 1 + encrypted.iv.length + encrypted.ciphertext.length);
+  return combined;
+}
+
+/**
+ * Unpacks an encrypted payload, extracting the version marker (if present), IV, ciphertext, and authTag.
+ * Supports:
+ * - Versioned AAD layout: [0x01][12-byte IV][ciphertext][16-byte authTag]
+ * - Legacy layout: [12-byte IV][ciphertext][16-byte authTag]
+ * - Legacy zero-IV layout: [ciphertext][16-byte authTag]
+ */
+export function unpackEncryptedPayload(encryptedBytes: Uint8Array): UnpackedPayload {
+  const IV_LENGTH = 12;
+  const TAG_LENGTH = 16;
+  const MIN_V1_LENGTH = 1 + IV_LENGTH + TAG_LENGTH;
+
+  // Check for version byte marker before the IV
+  if (encryptedBytes.length >= MIN_V1_LENGTH && encryptedBytes[0] === CIPHERTEXT_VERSION_BYTE) {
+    const iv = encryptedBytes.slice(1, 1 + IV_LENGTH);
+    const ciphertext = encryptedBytes.slice(1 + IV_LENGTH, encryptedBytes.length - TAG_LENGTH);
+    const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH);
+    return {
+      version: CIPHERTEXT_VERSION_BYTE,
+      iv,
+      ciphertext,
+      authTag,
+    };
+  }
+
+  // Legacy layout: [12-byte IV][ciphertext][16-byte authTag] (no version byte)
+  if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
+    const iv = encryptedBytes.slice(0, IV_LENGTH);
+    const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH);
+    const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH);
+    return {
+      version: null,
+      iv,
+      ciphertext,
+      authTag,
+    };
+  }
+
+  // Pre-E2EE / oldest layout: [ciphertext][16-byte authTag] with zero-IV
+  if (encryptedBytes.length >= TAG_LENGTH) {
+    const ciphertext = encryptedBytes.slice(0, encryptedBytes.length - TAG_LENGTH);
+    const authTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH);
+    return {
+      version: null,
+      iv: new Uint8Array(12),
+      ciphertext,
+      authTag,
+    };
+  }
+
+  throw new Error('Encrypted payload too short to contain valid ciphertext and auth tag');
+}
+
 /**
  * Encrypts file bytes in the browser using Web Crypto API (AES-GCM-256).
+ * Accepts an optional document digest H (or pre-constructed AAD). When provided,
+ * passes fixed label + digest H as AES-GCM Additional Authenticated Data (AAD).
  */
-export async function encryptFileClient(file: File, key: CryptoKey): Promise<EncryptedClientPayload> {
-  const buffer = await file.arrayBuffer();
+export async function encryptFileClient(
+  file: File | Blob | Uint8Array | ArrayBuffer,
+  key: CryptoKey,
+  digestOrAad?: string | Uint8Array | null
+): Promise<EncryptedClientPayload> {
+  let buffer: ArrayBuffer;
+  if (file instanceof Uint8Array) {
+    buffer = file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength) as ArrayBuffer;
+  } else if (file instanceof ArrayBuffer) {
+    buffer = file;
+  } else {
+    buffer = await file.arrayBuffer();
+  }
+
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
+  const encryptParams: AesGcmParams = {
+    name: 'AES-GCM',
+    iv,
+  };
+
+  if (digestOrAad) {
+    const aad = (typeof digestOrAad === 'string' || (digestOrAad instanceof Uint8Array && digestOrAad.length === 32))
+      ? getDocumentAad(digestOrAad)
+      : digestOrAad;
+    encryptParams.additionalData = aad.buffer.slice(
+      aad.byteOffset,
+      aad.byteOffset + aad.byteLength
+    ) as ArrayBuffer;
+  }
+
   const resultBuffer = await window.crypto.subtle.encrypt(
-    {
-      name: 'AES-GCM',
-      iv,
-    },
+    encryptParams,
     key,
     buffer
   );
@@ -185,17 +303,22 @@ export async function encryptFileClient(file: File, key: CryptoKey): Promise<Enc
     iv,
     authTag,
     alg: 'aes-256-gcm',
+    version: digestOrAad ? CIPHERTEXT_VERSION_BYTE : undefined,
   };
 }
 
 /**
  * Decrypts encrypted file bytes in the browser using Web Crypto API (AES-GCM-256).
+ * Accepts an optional requested digest H (or pre-constructed AAD).
+ * When provided, verifies AES-GCM Additional Authenticated Data (AAD).
+ * If omitted/null, decrypts without AAD (legacy document compatibility).
  */
 export async function decryptFileClient(
   ciphertext: Uint8Array,
   iv: Uint8Array,
   authTag: Uint8Array,
-  key: CryptoKey
+  key: CryptoKey,
+  digestOrAad?: string | Uint8Array | null
 ): Promise<ArrayBuffer> {
   // Web Crypto expects ciphertext concatenated with the 16-byte authTag
   const combined = new Uint8Array(ciphertext.length + authTag.length);
@@ -207,11 +330,23 @@ export async function decryptFileClient(
     combined.byteOffset + combined.byteLength
   ) as ArrayBuffer;
 
+  const decryptParams: AesGcmParams = {
+    name: 'AES-GCM',
+    iv: iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer,
+  };
+
+  if (digestOrAad) {
+    const aad = (typeof digestOrAad === 'string' || (digestOrAad instanceof Uint8Array && digestOrAad.length === 32))
+      ? getDocumentAad(digestOrAad)
+      : digestOrAad;
+    decryptParams.additionalData = aad.buffer.slice(
+      aad.byteOffset,
+      aad.byteOffset + aad.byteLength
+    ) as ArrayBuffer;
+  }
+
   return window.crypto.subtle.decrypt(
-    {
-      name: 'AES-GCM',
-      iv: iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer,
-    },
+    decryptParams,
     key,
     combinedBuffer
   );

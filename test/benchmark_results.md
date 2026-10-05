@@ -1,6 +1,6 @@
 # BDVS Comprehensive Benchmarking & Methodology Report
 
-**Execution Timestamp:** 2026-10-04T17:40:41.650Z  
+**Execution Timestamp:** 2026-10-05T08:41:57.424Z  
 **Purpose:** Quantitative benchmarking report and formal response to Peer Reviews #1, #3, #4, and #6.
 
 ---
@@ -16,7 +16,7 @@ To ensure full scientific reproducibility, all benchmarking execution parameters
 | **CPU Clock Speed** | 2918 MHz |
 | **CPU Core Count** | 20 Logical Cores |
 | **Total System RAM** | 15.71 GB |
-| **Free Memory at Test** | 3.94 GB |
+| **Free Memory at Test** | 2.84 GB |
 | **Node.js Runtime Version** | `v22.12.0` |
 | **V8 Engine Version** | `12.4.254.21-node.21` |
 | **OpenSSL Cryptographic Core** | `3.0.15+quic` |
@@ -33,59 +33,81 @@ Measured throughput (MB/s), mean latency ($\mu$), sample standard deviation ($\s
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 0.1584 ms | 0.1569 ms | ±0.0032 ms | [0.1575, 0.1593] ms | **616.59 MB/s** |
-| **SHA-256** | 256 bits | 0.0688 ms | 0.0684 ms | ±0.002 ms | [0.0683, 0.0694] ms | **1418.84 MB/s** |
-| **SHA-3 (256)** | 256 bits | 0.2268 ms | 0.2246 ms | ±0.0118 ms | [0.2235, 0.2300] ms | **430.66 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 0.1811 ms | 0.1798 ms | ±0.0041 ms | [0.1800, 0.1822] ms | **539.24 MB/s** |
-| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 2.2489 ms | 2.2428 ms | ±0.0514 ms | [2.2347, 2.2632] ms | **43.42 MB/s** |
-| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 0.2903 ms | 0.2873 ms | ±0.0091 ms | [0.2878, 0.2928] ms | **336.37 MB/s** |
-| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 6.045 ms | 5.9442 ms | ±0.2591 ms | [5.9732, 6.1168] ms | **16.15 MB/s** |
+| **MD5** | 128 bits | 0.1574 ms | 0.1557 ms | ±0.0054 ms | [0.1559, 0.1589] ms | **620.48 MB/s** |
+| **SHA-256** | 256 bits | 0.0679 ms | 0.0677 ms | ±0.0009 ms | [0.0677, 0.0682] ms | **1437.26 MB/s** |
+| **SHA-3 (256)** | 256 bits | 0.2245 ms | 0.2234 ms | ±0.0049 ms | [0.2231, 0.2258] ms | **435.09 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 0.1849 ms | 0.1809 ms | ±0.0201 ms | [0.1793, 0.1905] ms | **528.08 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 2.2988 ms | 2.2912 ms | ±0.0556 ms | [2.2834, 2.3142] ms | **42.48 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 0.3029 ms | 0.2896 ms | ±0.039 ms | [0.2921, 0.3137] ms | **322.44 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 5.9776 ms | 5.9141 ms | ±0.264 ms | [5.9044, 6.0508] ms | **16.34 MB/s** |
 
 ### Payload Size: 1 MB (10,48,576 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 1.6038 ms | 1.5762 ms | ±0.0634 ms | [1.5862, 1.6213] ms | **623.53 MB/s** |
-| **SHA-256** | 256 bits | 0.7531 ms | 0.7283 ms | ±0.0771 ms | [0.7318, 0.7745] ms | **1327.78 MB/s** |
-| **SHA-3 (256)** | 256 bits | 2.4291 ms | 2.3891 ms | ±0.154 ms | [2.3864, 2.4718] ms | **411.67 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 1.9287 ms | 1.9124 ms | ±0.0983 ms | [1.9015, 1.9559] ms | **518.48 MB/s** |
-| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 23.2774 ms | 23.2102 ms | ±0.4941 ms | [23.1405, 23.4144] ms | **42.96 MB/s** |
-| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 2.958 ms | 2.9346 ms | ±0.1003 ms | [2.9302, 2.9858] ms | **338.07 MB/s** |
-| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 63.2376 ms | 61.7191 ms | ±7.6405 ms | [61.1197, 65.3554] ms | **15.81 MB/s** |
+| **MD5** | 128 bits | 1.6077 ms | 1.5804 ms | ±0.0863 ms | [1.5838, 1.6316] ms | **622.02 MB/s** |
+| **SHA-256** | 256 bits | 0.6833 ms | 0.6793 ms | ±0.0134 ms | [0.6796, 0.6870] ms | **1463.43 MB/s** |
+| **SHA-3 (256)** | 256 bits | 2.3339 ms | 2.2938 ms | ±0.1073 ms | [2.3042, 2.3637] ms | **428.46 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 1.9147 ms | 1.8708 ms | ±0.1202 ms | [1.8814, 1.9480] ms | **522.27 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 23.6322 ms | 23.4536 ms | ±0.5553 ms | [23.4783, 23.7862] ms | **42.32 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 3.0249 ms | 3.0143 ms | ±0.1238 ms | [2.9906, 3.0592] ms | **330.59 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 61.6036 ms | 61.388 ms | ±1.478 ms | [61.1940, 62.0133] ms | **16.23 MB/s** |
 
 ### Payload Size: 5 MB (52,42,880 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 8.1533 ms | 8.0943 ms | ±0.2512 ms | [8.0837, 8.2229] ms | **613.25 MB/s** |
-| **SHA-256** | 256 bits | 3.5298 ms | 3.4845 ms | ±0.145 ms | [3.4896, 3.5700] ms | **1416.5 MB/s** |
-| **SHA-3 (256)** | 256 bits | 12.2647 ms | 11.8779 ms | ±1.4228 ms | [11.8703, 12.6591] ms | **407.67 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 11.0495 ms | 9.6807 ms | ±2.8493 ms | [10.2597, 11.8393] ms | **452.51 MB/s** |
-| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 116.3974 ms | 115.7705 ms | ±3.7873 ms | [115.3476, 117.4472] ms | **42.96 MB/s** |
-| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 14.5904 ms | 14.5071 ms | ±0.2648 ms | [14.5170, 14.6639] ms | **342.69 MB/s** |
-| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 304.1 ms | 303.0242 ms | ±5.6856 ms | [302.5240, 305.6759] ms | **16.44 MB/s** |
+| **MD5** | 128 bits | 8.2137 ms | 8.1378 ms | ±0.2455 ms | [8.1457, 8.2818] ms | **608.74 MB/s** |
+| **SHA-256** | 256 bits | 3.4611 ms | 3.4376 ms | ±0.0918 ms | [3.4357, 3.4865] ms | **1444.63 MB/s** |
+| **SHA-3 (256)** | 256 bits | 11.8101 ms | 11.8101 ms | ±0.2182 ms | [11.7496, 11.8706] ms | **423.37 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 9.6454 ms | 9.6003 ms | ±0.2395 ms | [9.5790, 9.7117] ms | **518.38 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 117.3472 ms | 117.0361 ms | ±2.3164 ms | [116.7051, 117.9893] ms | **42.61 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 14.6774 ms | 14.6648 ms | ±0.1743 ms | [14.6290, 14.7257] ms | **340.66 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 302.6068 ms | 302.3658 ms | ±2.1438 ms | [302.0126, 303.2011] ms | **16.52 MB/s** |
 
 ### Payload Size: 10 MB (1,04,85,760 bytes)
 
 | Algorithm | Output Size | Mean Latency (ms) | Median Latency (ms) | Std Dev (ms) | 95% Confidence Interval | Throughput (MB/s) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MD5** | 128 bits | 16.1297 ms | 16.1015 ms | ±0.3569 ms | [16.0308, 16.2286] ms | **619.97 MB/s** |
-| **SHA-256** | 256 bits | 6.9053 ms | 6.8352 ms | ±0.2437 ms | [6.8377, 6.9728] ms | **1448.16 MB/s** |
-| **SHA-3 (256)** | 256 bits | 23.3209 ms | 23.2308 ms | ±0.4985 ms | [23.1828, 23.4591] ms | **428.8 MB/s** |
-| **Blake2b (512/256)** | 256 bits | 18.9205 ms | 18.8387 ms | ±0.3881 ms | [18.8130, 19.0281] ms | **528.53 MB/s** |
-| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 232.6507 ms | 231.4015 ms | ±3.5739 ms | [231.6600, 233.6413] ms | **42.98 MB/s** |
-| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 29.4315 ms | 29.1993 ms | ±0.6667 ms | [29.2467, 29.6162] ms | **339.77 MB/s** |
-| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 613.8725 ms | 610.2051 ms | ±10.6854 ms | [610.9106, 616.8343] ms | **16.29 MB/s** |
+| **MD5** | 128 bits | 16.1972 ms | 16.0883 ms | ±0.52 ms | [16.0530, 16.3413] ms | **617.39 MB/s** |
+| **SHA-256** | 256 bits | 6.8966 ms | 6.8343 ms | ±0.157 ms | [6.8531, 6.9401] ms | **1449.99 MB/s** |
+| **SHA-3 (256)** | 256 bits | 23.3324 ms | 23.1502 ms | ±0.5846 ms | [23.1704, 23.4944] ms | **428.59 MB/s** |
+| **Blake2b (512/256)** | 256 bits | 18.9319 ms | 18.9178 ms | ±0.2637 ms | [18.8588, 19.0050] ms | **528.21 MB/s** |
+| **Keccak-256 (js-sha3 pure-JS) [PRIMARY]** | 256 bits | 234.695 ms | 234.2965 ms | ±2.5139 ms | [233.9982, 235.3918] ms | **42.61 MB/s** |
+| **Keccak-256 (keccak native C bindings) [PRIMARY]** | 256 bits | 29.515 ms | 29.4037 ms | ±0.5123 ms | [29.3729, 29.6570] ms | **338.81 MB/s** |
+| **Keccak-256 (ethers.js) [OVERHEAD REF — hex marshal included]** | 256 bits | 609.8485 ms | 609.3626 ms | ±4.3847 ms | [608.6332, 611.0639] ms | **16.4 MB/s** |
 
 ---
 
 ## 3. Baseline Architectural Comparisons (Review #6 Resolution)
 
-### A. Unencrypted vs Client-Side Encrypted Pipeline Overhead (1 MB Payload)
-| Pipeline Component | Mean Latency (ms) | Overhead vs Baseline |
-| :--- | :--- | :--- |
-| **Direct Hashing Baseline** | 0.7132 ms | Baseline (0.00 ms) |
-| **AES-256-GCM Encrypt + Hash Pipeline** | 2.221 ms | +1.5078 ms |
+### A. Unencrypted vs Client-Side Encrypted Pipeline Overhead (1 MB Payload, N=50, 10 Warmup Runs)
+
+*Note: Raw per-run observation vectors ($N=50$ each) are recorded in [`test/baseline_benchmark_raw.json`](./baseline_benchmark_raw.json). Baseline is native Keccak-256 (matching BDVS on-chain document digests). Ciphertext re-hashing (`encHash`) has been removed to match the real client execution flow.*
+
+#### 1. Web Crypto API Pipeline (Browser Execution Path via `crypto.subtle`)
+
+| Pipeline Component | Mean Latency (ms) | Std Dev (ms) | 95% CI (ms) | Overhead vs Baseline | Throughput (MB/s) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Direct Keccak-256 Hashing Baseline** | 3.0525 ms | ±0.7762 ms | [2.8373, 3.2676] ms | Baseline (0.00 ms) | 327.61 MB/s |
+| **2. AES-256-GCM Encrypt (without AAD) + Keccak** | 4.1197 ms | ±0.4299 ms | [4.0005, 4.2388] ms | +1.0672 ms | 242.74 MB/s |
+| **3. AES-256-GCM Encrypt (with AAD) + Keccak** | 4.1632 ms | ±0.7637 ms | [3.9515, 4.3749] ms | +1.1107 ms | 240.2 MB/s |
+
+- **Encryption Overhead (without AAD):** +1.0672 ms
+- **Total Pipeline Overhead (with AAD):** +1.1107 ms
+- **Isolated AAD GHASH Cost (Row 3 − Row 2):** **+0.0435 ms**
+
+#### 2. Node.js / OpenSSL Pipeline (Backend & CLI Engine via `crypto.createCipheriv`)
+
+| Pipeline Component | Mean Latency (ms) | Std Dev (ms) | 95% CI (ms) | Overhead vs Baseline | Throughput (MB/s) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Direct Keccak-256 Hashing Baseline** | 2.9562 ms | ±0.1383 ms | [2.9179, 2.9945] ms | Baseline (0.00 ms) | 338.27 MB/s |
+| **2. AES-256-GCM Encrypt (without AAD) + Keccak** | 4.3296 ms | ±0.4148 ms | [4.2146, 4.4446] ms | +1.3734 ms | 230.97 MB/s |
+| **3. AES-256-GCM Encrypt (with AAD) + Keccak** | 4.2896 ms | ±0.4498 ms | [4.1649, 4.4142] ms | +1.3334 ms | 233.12 MB/s |
+
+- **Encryption Overhead (without AAD):** +1.3734 ms
+- **Total Pipeline Overhead (with AAD):** +1.3334 ms
+- **Isolated AAD GHASH Cost (Row 3 − Row 2):** **-0.0400 ms**
 
 ### B. Network & Consensus Delay Baselines
 | Operation Type | Target System Layer | Mean / Expected Latency Range | Dominant Latency Factor |
@@ -172,8 +194,8 @@ isDocumentRevoked (view) & 0 & Read-only SLOAD; no gas when called externally \\
 ## 5. Concurrent Load Benchmark (§10.1 — Reviewer Concurrency Gap)
 
 **Configuration:** 10 concurrent virtual users × 30 reps = **300 total operations**  
-**Wall-clock time:** Phase 1 (register+verify): 1733 ms | Phase 2 (reads): 294 ms | Total: 2027 ms  
-**Throughput:** **173.1 registrations/sec** (10 concurrent users, wall clock)
+**Wall-clock time:** Phase 1 (register+verify): 549 ms | Phase 2 (reads): 202 ms | Total: 751 ms  
+**Throughput:** **546.4 registrations/sec** (10 concurrent users, wall clock)
 
 > **Scope note (§10.1):** This benchmark tests concurrent application-layer request handling
 > against a single in-process Hardhat node. It is a realistic simulation of multi-browser /
@@ -185,25 +207,25 @@ isDocumentRevoked (view) & 0 & Read-only SLOAD; no gas when called externally \\
 
 | Metric | min | median | mean ± 95% CI | p95 | p99 | max |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **registerDocument() latency (ms)** | 42.0 | 49.0 | 49.5 ±0.5 | 55.0 | 65.0 | 67.0 |
-| **registerDocument() gas (units)** | 190701 | 190725 | 191293 ±348 | 190725 | 207825 | 207825 |
-| **verifyDocument() latency (ms)** | 4.0 | 8.0 | 8.1 ±0.1 | 10.0 | 12.0 | 12.0 |
-| **getDocumentMeta() latency (ms)** | 6.0 | 8.0 | 7.9 ±0.1 | 10.0 | 11.0 | 12.0 |
+| **registerDocument() latency (ms)** | 11.0 | 14.0 | 14.1 ±0.3 | 21.0 | 23.0 | 25.0 |
+| **registerDocument() gas (units)** | 190701 | 190725 | 191294 ±348 | 190725 | 207825 | 207825 |
+| **verifyDocument() latency (ms)** | 1.0 | 4.0 | 4.1 ±0.1 | 6.0 | 7.0 | 8.0 |
+| **getDocumentMeta() latency (ms)** | 2.0 | 4.0 | 4.6 ±0.1 | 7.0 | 8.0 | 8.0 |
 
 ### B. Per-User Registration Latency Breakdown
 
 | User | Median latency (ms) | p95 latency (ms) | Median gas (units) |
 | :--- | :--- | :--- | :--- |
-| user-00 | 49.0 | 55.1 | 190725 |
-| user-01 | 49.0 | 53.5 | 190725 |
-| user-02 | 48.5 | 55.7 | 190725 |
-| user-03 | 49.0 | 53.5 | 190725 |
-| user-04 | 49.0 | 55.2 | 190725 |
-| user-05 | 49.0 | 54.5 | 190725 |
-| user-06 | 48.5 | 55.2 | 190725 |
-| user-07 | 49.0 | 54.5 | 190725 |
-| user-08 | 49.0 | 54.0 | 190725 |
-| user-09 | 49.5 | 54.0 | 190725 |
+| user-00 | 14.0 | 18.2 | 190725 |
+| user-01 | 14.0 | 18.7 | 190725 |
+| user-02 | 14.0 | 18.7 | 190725 |
+| user-03 | 13.5 | 18.7 | 190725 |
+| user-04 | 13.0 | 18.3 | 190725 |
+| user-05 | 14.0 | 18.7 | 190725 |
+| user-06 | 14.0 | 17.7 | 190725 |
+| user-07 | 14.0 | 18.3 | 190725 |
+| user-08 | 14.0 | 18.2 | 190725 |
+| user-09 | 13.0 | 17.7 | 190725 |
 
 ---
 

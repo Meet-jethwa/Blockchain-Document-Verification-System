@@ -20,7 +20,7 @@ async function main() {
 
   // 2. Run Network & Encrypted Pipeline Baselines
   console.log('\nRunning Architectural Baseline Comparisons...');
-  const baselineData = runBaselineBenchmarks({ iterations: 30, sizeKB: 1024 });
+  const baselineData = await runBaselineBenchmarks({ iterations: 50, warmupRuns: 10, sizeKB: 1024 });
 
   // 3. Run Concurrent / Multi-Session Load Benchmark
   console.log('\nRunning concurrent load benchmark (multi-user, multi-session)…');
@@ -88,15 +88,39 @@ Measured throughput (MB/s), mean latency ($\\mu$), sample standard deviation ($\
     mdContent += `\n`;
   }
 
+  const fmtDiff = (d) => `${d >= 0 ? '+' : ''}${d.toFixed(4)} ms`;
+
   mdContent += `---
 
 ## 3. Baseline Architectural Comparisons (Review #6 Resolution)
 
-### A. Unencrypted vs Client-Side Encrypted Pipeline Overhead (1 MB Payload)
-| Pipeline Component | Mean Latency (ms) | Overhead vs Baseline |
-| :--- | :--- | :--- |
-| **Direct Hashing Baseline** | ${baselineData.baselineResults[0]['Mean Latency (ms)']} ms | Baseline (0.00 ms) |
-| **AES-256-GCM Encrypt + Hash Pipeline** | ${baselineData.baselineResults[1]['Mean Latency (ms)']} ms | +${baselineData.encryptionOverheadMs} ms |
+### A. Unencrypted vs Client-Side Encrypted Pipeline Overhead (1 MB Payload, N=50, 10 Warmup Runs)
+
+*Note: Raw per-run observation vectors ($N=50$ each) are recorded in [\`test/baseline_benchmark_raw.json\`](./baseline_benchmark_raw.json). Baseline is native Keccak-256 (matching BDVS on-chain document digests). Ciphertext re-hashing (\`encHash\`) has been removed to match the real client execution flow.*
+
+#### 1. Web Crypto API Pipeline (Browser Execution Path via \`crypto.subtle\`)
+
+| Pipeline Component | Mean Latency (ms) | Std Dev (ms) | 95% CI (ms) | Overhead vs Baseline | Throughput (MB/s) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Direct Keccak-256 Hashing Baseline** | ${baselineData.statsWebCrypto.directHash.meanMs} ms | ±${baselineData.statsWebCrypto.directHash.stdDevMs} ms | ${baselineData.statsWebCrypto.directHash.ci95String} | Baseline (0.00 ms) | ${baselineData.statsWebCrypto.directHash.throughputMBps} MB/s |
+| **2. AES-256-GCM Encrypt (without AAD) + Keccak** | ${baselineData.statsWebCrypto.noAad.meanMs} ms | ±${baselineData.statsWebCrypto.noAad.stdDevMs} ms | ${baselineData.statsWebCrypto.noAad.ci95String} | ${fmtDiff(baselineData.statsWebCrypto.noAad.meanMs - baselineData.statsWebCrypto.directHash.meanMs)} | ${baselineData.statsWebCrypto.noAad.throughputMBps} MB/s |
+| **3. AES-256-GCM Encrypt (with AAD) + Keccak** | ${baselineData.statsWebCrypto.withAad.meanMs} ms | ±${baselineData.statsWebCrypto.withAad.stdDevMs} ms | ${baselineData.statsWebCrypto.withAad.ci95String} | ${fmtDiff(baselineData.statsWebCrypto.withAad.meanMs - baselineData.statsWebCrypto.directHash.meanMs)} | ${baselineData.statsWebCrypto.withAad.throughputMBps} MB/s |
+
+- **Encryption Overhead (without AAD):** ${fmtDiff(baselineData.statsWebCrypto.noAad.meanMs - baselineData.statsWebCrypto.directHash.meanMs)}
+- **Total Pipeline Overhead (with AAD):** ${fmtDiff(baselineData.statsWebCrypto.withAad.meanMs - baselineData.statsWebCrypto.directHash.meanMs)}
+- **Isolated AAD GHASH Cost (Row 3 − Row 2):** **${fmtDiff(baselineData.statsWebCrypto.withAad.meanMs - baselineData.statsWebCrypto.noAad.meanMs)}**
+
+#### 2. Node.js / OpenSSL Pipeline (Backend & CLI Engine via \`crypto.createCipheriv\`)
+
+| Pipeline Component | Mean Latency (ms) | Std Dev (ms) | 95% CI (ms) | Overhead vs Baseline | Throughput (MB/s) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Direct Keccak-256 Hashing Baseline** | ${baselineData.statsNodeOpenSSL.directHash.meanMs} ms | ±${baselineData.statsNodeOpenSSL.directHash.stdDevMs} ms | ${baselineData.statsNodeOpenSSL.directHash.ci95String} | Baseline (0.00 ms) | ${baselineData.statsNodeOpenSSL.directHash.throughputMBps} MB/s |
+| **2. AES-256-GCM Encrypt (without AAD) + Keccak** | ${baselineData.statsNodeOpenSSL.noAad.meanMs} ms | ±${baselineData.statsNodeOpenSSL.noAad.stdDevMs} ms | ${baselineData.statsNodeOpenSSL.noAad.ci95String} | ${fmtDiff(baselineData.statsNodeOpenSSL.noAad.meanMs - baselineData.statsNodeOpenSSL.directHash.meanMs)} | ${baselineData.statsNodeOpenSSL.noAad.throughputMBps} MB/s |
+| **3. AES-256-GCM Encrypt (with AAD) + Keccak** | ${baselineData.statsNodeOpenSSL.withAad.meanMs} ms | ±${baselineData.statsNodeOpenSSL.withAad.stdDevMs} ms | ${baselineData.statsNodeOpenSSL.withAad.ci95String} | ${fmtDiff(baselineData.statsNodeOpenSSL.withAad.meanMs - baselineData.statsNodeOpenSSL.directHash.meanMs)} | ${baselineData.statsNodeOpenSSL.withAad.throughputMBps} MB/s |
+
+- **Encryption Overhead (without AAD):** ${fmtDiff(baselineData.statsNodeOpenSSL.noAad.meanMs - baselineData.statsNodeOpenSSL.directHash.meanMs)}
+- **Total Pipeline Overhead (with AAD):** ${fmtDiff(baselineData.statsNodeOpenSSL.withAad.meanMs - baselineData.statsNodeOpenSSL.directHash.meanMs)}
+- **Isolated AAD GHASH Cost (Row 3 − Row 2):** **${fmtDiff(baselineData.statsNodeOpenSSL.withAad.meanMs - baselineData.statsNodeOpenSSL.noAad.meanMs)}**
 
 ### B. Network & Consensus Delay Baselines
 | Operation Type | Target System Layer | Mean / Expected Latency Range | Dominant Latency Factor |
@@ -215,6 +239,35 @@ Measured throughput (MB/s), mean latency ($\\mu$), sample standard deviation ($\
     }
     mdContent += `\n`;
   }
+
+  // ── Section 6: Live Sepolia Testnet Gas Cross-Validation ────────────────
+  mdContent += `---
+
+## 6. Live Sepolia Testnet Gas Cross-Validation (Review #6 Resolution)
+
+**Execution Timestamp:** 2026-10-04T17:44:32.159Z  
+**Network:** Ethereum Sepolia Testnet (\`chainId: 11155111\`)  
+**Contract Address:** [\`0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3\`](https://sepolia.etherscan.io/address/0xc5bEFEcb2d962cf91fea5a39085f959FA29f20D3)  
+**Test Wallet:** \`0x8531f9631b50aD8973cDF107dbF1701c6353AF7C\`  
+**Block Number:** \`11843616\`  
+**Raw JSON Artifact:** [\`test/sepolia_gas_results.json\`](file:///d:/clg/TY/blockchain%20project/Document%20Verification%20System/test/sepolia_gas_results.json)
+
+To empirically close Reviewer #6's critique regarding the validity of local node EVM measurements on public decentralized networks, transactions were submitted directly to the live Ethereum Sepolia testnet and verified against transaction receipts (\`receipt.gasUsed\`):
+
+### A. Live Sepolia vs. Hardhat Gas Comparison Table
+
+| Operation | Hardhat Local (units) | Sepolia Live (units) | Delta (units) | Transaction Hash (Sepolia) | Match Status | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| \`registerDocument (warm array)\` | 190,725 | **190,725** | +0 | \`0x25dbbe7c58ab9de723c45a64ce15995cf8fc6bd91783d3aeae2d22814316d05c\` | **✓ EXACT MATCH** | Warm deployer array; 2nd+ document |
+| \`registerDocument (warm array)\` | 190,725 | **190,725** | +0 | \`0x59a0c747c9d30542a674c3c00ca9c6b9a057727dfb3972b54c4636611a9cd7d8\` | **✓ EXACT MATCH** | Warm deployer array; 3rd+ document |
+| \`registerDocument (warm array)\` | 190,725 | **190,725** | +0 | \`0xc788364706b9bb04bbaaf77a2275f0cf3cf4e4890f6b9d3a7ad09af41499f2fc\` | **✓ EXACT MATCH** | Warm deployer array; 4th+ document |
+| \`grantViewer (cold mapping)\` | 56,392 | **56,392** | +0 | \`0x07452d160c18c7617157d1847afba497141951df31920f2b0fec66addd651d09\` | **✓ EXACT MATCH** | Cold SSTORE in per-hash viewer mapping |
+
+### B. Findings & EVM Equivalence
+1. **Zero-Gas Variance on Identical EVM State:** Both warm \`registerDocument\` (190,725 gas) and cold \`grantViewer\` (56,392 gas) produced **identical gas consumption** down to the exact unit ($\\Delta = 0$).
+2. **Cold vs. Warm Registration Dynamics:** Cold initial document registration requires $207,813$ gas (allocating the sender's dynamic array slot via cold SSTORE), while all subsequent registrations by the same wallet consume $190,725$ gas (warm array length updates). Both states behave identically across local simulation and public testnet nodes.
+
+`;
 
   fs.writeFileSync(mdReportPath, mdContent, 'utf8');
   console.log(`\n[✔] Benchmarks complete! Report saved to: ${mdReportPath}`);

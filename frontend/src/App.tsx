@@ -3,7 +3,7 @@ import profilePhoto from './photo.jpeg'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { ethers } from 'ethers'
 import { fetchDocuments, fetchProfile, fetchSharedDocuments, recordSharedDocument, resolveUrl, saveProfile, verifyHash, type DocumentSummary, type RegisterResponse, type UserProfile } from './api'
-import { signAuthHeaders, deriveWalletMasterKey, deriveDocumentKey, encryptFileClient, decryptFileClient, wrapKeyForGrantee, unwrapKeyAsGrantee, publishP256PublicKey, ecrecoverSpkiSignature, type WrappedGranteeKey } from './clientCrypto'
+import { signAuthHeaders, deriveWalletMasterKey, deriveDocumentKey, encryptFileClient, decryptFileClient, packEncryptedPayload, unpackEncryptedPayload, CIPHERTEXT_VERSION_BYTE, wrapKeyForGrantee, unwrapKeyAsGrantee, publishP256PublicKey, ecrecoverSpkiSignature, type WrappedGranteeKey } from './clientCrypto'
 
 type PageId = 'home' | 'dashboard' | 'upload' | 'shared' | 'profile'
 type ThemeMode = 'dark' | 'light'
@@ -707,15 +707,12 @@ function App() {
         )
       }
 
-      setUploadMessage('Encrypting file client-side with document-bound key…')
-      const encrypted = await encryptFileClient(uploadFile, docKey)
+      setUploadMessage('Encrypting file client-side with document-bound key and digest AAD…')
+      const encrypted = await encryptFileClient(uploadFile, docKey, plainHash)
 
-      // Pack payload [12-byte IV][ciphertext][16-byte authTag] into a Blob for upload
-      const combined = new Uint8Array(encrypted.iv.length + encrypted.ciphertext.length + encrypted.authTag.length)
-      combined.set(encrypted.iv, 0)
-      combined.set(encrypted.ciphertext, encrypted.iv.length)
-      combined.set(encrypted.authTag, encrypted.iv.length + encrypted.ciphertext.length)
-      const ciphertextBlob = new Blob([combined], { type: 'application/octet-stream' })
+      // Pack payload [version byte 0x01][12-byte IV][ciphertext][16-byte authTag] into a Blob for upload
+      const combined = packEncryptedPayload(encrypted)
+      const ciphertextBlob = new Blob([combined as unknown as BlobPart], { type: 'application/octet-stream' })
       const ciphertextFile = new File([ciphertextBlob], uploadFile.name + '.enc')
 
       setUploadMessage('Uploading encrypted ciphertext to IPFS via backend relay…')
@@ -859,6 +856,34 @@ function App() {
 
       let plaintextBuffer: ArrayBuffer | null = null
 
+      const unpacked = unpackEncryptedPayload(encryptedBytes)
+
+      // Decryption helper:
+      // If version is CIPHERTEXT_VERSION_BYTE (0x01), uses requested digest 'hash' as AAD.
+      // Falls back to legacy unpack without AAD if AAD decrypt fails (in case a legacy document's random IV started with 0x01).
+      const tryDecrypt = async (key: CryptoKey): Promise<ArrayBuffer | null> => {
+        if (unpacked.version === CIPHERTEXT_VERSION_BYTE) {
+          try {
+            return await decryptFileClient(unpacked.ciphertext, unpacked.iv, unpacked.authTag, key, hash)
+          } catch (e) {
+            // In case of a legacy document whose first IV byte happened to match 0x01, fallback to legacy unpack without AAD
+            if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
+              const legacyIv = encryptedBytes.slice(0, IV_LENGTH)
+              const legacyCipher = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
+              const legacyTag = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+              try {
+                return await decryptFileClient(legacyCipher, legacyIv, legacyTag, key, null)
+              } catch {
+                // fall through to rethrow
+              }
+            }
+            throw e
+          }
+        }
+        // Legacy document without version byte: decrypt without AAD
+        return await decryptFileClient(unpacked.ciphertext, unpacked.iv, unpacked.authTag, key, null)
+      }
+
       // §IV-C: Try grantee unwrap path first.
       // The download route already verified on-chain + local share index access;
       // here we additionally check whether this wallet is the registered owner.
@@ -874,12 +899,7 @@ function App() {
           await wrappedKeyRes.json() as { wrappedKey: WrappedGranteeKey; isOwnerKey: boolean }
         try {
           const aesKey = await unwrapKeyAsGrantee(signer, walletAddress, wrapped)
-          if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
-            const iv         = encryptedBytes.slice(0, IV_LENGTH)
-            const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
-            const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
-            plaintextBuffer  = await decryptFileClient(ciphertext, iv, authTag, aesKey)
-          }
+          plaintextBuffer = await tryDecrypt(aesKey)
           if (isOwnerKey) {
             // eslint-disable-next-line no-console
             console.debug('[download] Decrypted via owner self-wrap')
@@ -900,25 +920,19 @@ function App() {
         // Domain-separated derive (§IV-B): bind to chainId + contractAddress
         const masterKey = await deriveWalletMasterKey(signer, walletAddress, hash, effectiveChainId, effectiveContract)
 
-        // Attempt 1: Standard layout [12-byte IV][ciphertext][16-byte authTag] with document-bound key
-        if (encryptedBytes.length >= IV_LENGTH + TAG_LENGTH) {
-          const iv         = encryptedBytes.slice(0, IV_LENGTH)
-          const ciphertext = encryptedBytes.slice(IV_LENGTH, encryptedBytes.length - TAG_LENGTH)
-          const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
+        try {
+          plaintextBuffer = await tryDecrypt(masterKey)
+        } catch {
+          // Attempt 2: legacy wallet-only master key (no document hash binding)
           try {
-            plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, masterKey)
+            const legacyKey = await deriveWalletMasterKey(signer, walletAddress, undefined, effectiveChainId, effectiveContract)
+            plaintextBuffer = await tryDecrypt(legacyKey)
           } catch {
-            // Attempt 2: legacy wallet-only master key (no document hash binding)
+            // Attempt 3: pre-domain-separation (no chain/contract) — oldest documents
             try {
-              const legacyKey = await deriveWalletMasterKey(signer, walletAddress, undefined, effectiveChainId, effectiveContract)
-              plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, legacyKey)
-            } catch {
-              // Attempt 3: pre-domain-separation (no chain/contract) — oldest documents
-              try {
-                const oldestKey = await deriveWalletMasterKey(signer, walletAddress, hash)
-                plaintextBuffer = await decryptFileClient(ciphertext, iv, authTag, oldestKey)
-              } catch { /* pass to legacy layout */ }
-            }
+              const oldestKey = await deriveWalletMasterKey(signer, walletAddress, hash)
+              plaintextBuffer = await tryDecrypt(oldestKey)
+            } catch { /* pass to legacy layout */ }
           }
         }
 
@@ -928,11 +942,11 @@ function App() {
           const authTag    = encryptedBytes.slice(encryptedBytes.length - TAG_LENGTH)
           const zeroIv     = new Uint8Array(12)
           try {
-            plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, masterKey)
+            plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, masterKey, null)
           } catch {
             try {
               const legacyKey = await deriveWalletMasterKey(signer, walletAddress)
-              plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, legacyKey)
+              plaintextBuffer = await decryptFileClient(ciphertext, zeroIv, authTag, legacyKey, null)
             } catch { /* all attempts failed */ }
           }
         }

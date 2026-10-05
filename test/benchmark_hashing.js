@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 // js-sha3: pure-JS Keccak-256 — zero wrapper overhead, measures raw JS permutation speed
-import { sha3_256 as jsSha3_256 } from 'js-sha3';
+import { keccak256 as jsKeccak256 } from 'js-sha3';
 // ethers is only used for the "overhead reference" row; it is NOT the primary measurement
 import { ethers } from 'ethers';
 
@@ -96,7 +96,8 @@ function computeStatistics(timings, payloadSizeBytes) {
     semMs: parseFloat(semMs.toFixed(4)),
     ci95MarginMs: parseFloat(ci95MarginMs.toFixed(4)),
     ci95String: `[${ci95LowerMs.toFixed(4)}, ${ci95UpperMs.toFixed(4)}] ms`,
-    throughputMBps: parseFloat(throughputMBps.toFixed(2))
+    throughputMBps: parseFloat(throughputMBps.toFixed(2)),
+    rawTimingsMs: timings.map(t => parseFloat(t.toFixed(5)))
   };
 }
 
@@ -159,7 +160,7 @@ export function runHashBenchmarks(options = {}) {
       // This is the authoritative MB/s figure for pure-JS Keccak-256.
       name: 'Keccak-256 (js-sha3 pure-JS) [PRIMARY]',
       outputBits: 256,
-      fn: (buf) => jsSha3_256(buf)
+      fn: (buf) => jsKeccak256(buf)
     },
     // PRIMARY: native C bindings via the `keccak` npm package.
     // Lowest possible overhead for the Keccak permutation inside Node.js.
@@ -219,16 +220,26 @@ export function runHashBenchmarks(options = {}) {
     resultsByPayload.push(payloadResult);
   }
 
-  return {
+  const exportData = {
     systemInfo,
     config: { iterations, warmupRuns, fileSizesKB },
     resultsByPayload,
     timestamp: new Date().toISOString()
   };
+
+  try {
+    const rawExportPath = path.join(__dirname, 'hashing_benchmark_raw.json');
+    fs.writeFileSync(rawExportPath, JSON.stringify(exportData, null, 2), 'utf8');
+    console.log(`[+] Saved all per-run benchmark observations to: ${rawExportPath}`);
+  } catch (err) {
+    console.warn('Warning: Could not write hashing_benchmark_raw.json:', err.message);
+  }
+
+  return exportData;
 }
 
 if (process.argv[1] && process.argv[1].endsWith('benchmark_hashing.js')) {
-  const benchmarkData = runHashBenchmarks({ iterations: 25, warmupRuns: 5 });
+  const benchmarkData = runHashBenchmarks({ iterations: 50, warmupRuns: 10, fileSizesKB: [100, 1024, 5120, 10240] });
 
   console.log('\n===============================================================');
   console.log('     STATISTICAL RESULTS WITH 95% CI                           ');
